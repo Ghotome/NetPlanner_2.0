@@ -1,0 +1,29 @@
+[build-system]
+requires = ["hatchling>=1.24.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "netplanner"
+version = "0.1.0"
+description = "Кросплатформений додаток для моделювання і моніторингу ІР мережі."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "fish.head" }]
+keywords = ["network", "mapping", "planner", "qt"]
+dependencies = [
+  "PySide6>=6.6",
+]
+
+[project.scripts]
+netplanner = "app.main:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[tool.ruff]
+line-length = 100
+extend-exclude = [".venv", ".git", "dist", "build"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

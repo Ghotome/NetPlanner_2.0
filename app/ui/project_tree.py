@@ -1,0 +1,57 @@
+from __future__ import annotations
+
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QTreeWidget, QTreeWidgetItem
+
+from app.domain import NetworkProject
+
+
+class ProjectTree(QTreeWidget):
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setHeaderLabel("Проєкт")
+        self._nodes_item = QTreeWidgetItem(["Зони"])
+        self._links_item = QTreeWidgetItem(["Зв'язки"])
+        self._node_items = {}
+        self._link_items = {}
+        self.addTopLevelItem(self._nodes_item)
+        self.addTopLevelItem(self._links_item)
+        self.expandAll()
+
+    def set_project(self, project: NetworkProject) -> None:
+        self._nodes_item.takeChildren()
+        self._links_item.takeChildren()
+        self._node_items.clear()
+        self._link_items.clear()
+
+        for site in project.sites.values():
+            item = QTreeWidgetItem([f"{site.name} ({site.kind.value})"])
+            item.setData(0, Qt.ItemDataRole.UserRole, site.id)
+            self._nodes_item.addChild(item)
+            self._node_items[site.id] = item
+
+            for device in site.devices.values():
+                child = QTreeWidgetItem([f"{device.name} ({device.device_type.value})"])
+                child.setData(0, Qt.ItemDataRole.UserRole, f"{site.id}:{device.id}")
+                item.addChild(child)
+
+        for link in project.links.values():
+            item = QTreeWidgetItem([f"{link.name} ({link.kind.value})"])
+            item.setData(0, Qt.ItemDataRole.UserRole, link.id)
+            self._links_item.addChild(item)
+            self._link_items[link.id] = item
+
+        self.expandAll()
+
+    def add_node(self, node_id: str, label: str) -> None:
+        item = QTreeWidgetItem([label])
+        item.setData(0, Qt.ItemDataRole.UserRole, node_id)
+        self._nodes_item.addChild(item)
+        self._node_items[node_id] = item
+        self.expandAll()
+
+    def select_node(self, node_id: str) -> None:
+        item = self._node_items.get(node_id)
+        if item is None:
+            return
+        self.setCurrentItem(item)

@@ -14,7 +14,33 @@
       html, body, #map { height: 100%; margin: 0; }
       .leaflet-container { background: #0f1720; }
       .elevation-tiles { filter: saturate(160%) contrast(140%); }
-      
+      .site-marker .site-dot {
+        width: 14px;
+        height: 14px;
+        border-radius: 50%;
+        border: 2px solid #0f1720;
+        box-shadow: 0 0 0 1px rgba(255,255,255,0.4);
+      }
+      .elevation-legend {
+        background: rgba(15, 23, 32, 0.85);
+        color: #fff;
+        padding: 8px 10px;
+        border-radius: 6px;
+        font: 12px/1.2 sans-serif;
+      }
+      .legend-title { font-weight: 600; margin-bottom: 6px; }
+      .legend-bar {
+        width: 180px;
+        height: 8px;
+        background: linear-gradient(90deg, #c0392b 0%, #e67e22 35%, #f1c40f 60%, #27ae60 100%);
+        border-radius: 4px;
+        margin-bottom: 4px;
+      }
+      .legend-labels {
+        display: flex;
+        justify-content: space-between;
+        font-size: 10px;
+      }
     </style>
   </head>
   <body>
@@ -34,6 +60,23 @@
         'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png',
         { maxZoom: 15, opacity: 0.65, className: 'elevation-tiles' }
       );
+      const elevationLegend = L.control({ position: 'bottomleft' });
+      elevationLegend.onAdd = function () {
+        const div = L.DomUtil.create('div', 'elevation-legend');
+        div.innerHTML = `
+          <div class="legend-title">Висота (м)</div>
+          <div class="legend-bar"></div>
+          <div class="legend-labels">
+            <span>0 м</span>
+            <span>500 м</span>
+            <span>1000 м</span>
+            <span>2000 м</span>
+            <span>3000 м</span>
+            <span>4000+ м</span>
+          </div>
+        `;
+        return div;
+      };
 
       const markers = new Map();
       const links = new Map();
@@ -56,8 +99,25 @@
         }
       }
 
+      function statusColor(status) {
+        if (status === 'up') return '#22c55e';
+        if (status === 'down') return '#ef4444';
+        if (status === 'degraded') return '#f59e0b';
+        return '#94a3b8';
+      }
+
+      function markerIcon(status) {
+        const color = statusColor(status);
+        return L.divIcon({
+          className: 'site-marker',
+          html: `<div class=\"site-dot\" style=\"background:${color}\"></div>`,
+          iconSize: [18, 18],
+          iconAnchor: [9, 9],
+        });
+      }
+
       function addMarker(id, name, kind, lat, lon) {
-        const marker = L.marker([lat, lon], { draggable: true });
+        const marker = L.marker([lat, lon], { draggable: true, icon: markerIcon('unknown') });
         marker.addTo(map);
         marker.bindPopup(`${name} (${kind})`);
         marker.bindTooltip(name, { direction: 'top' });
@@ -89,6 +149,12 @@
         const marker = markers.get(id);
         if (!marker) { return; }
         marker.setLatLng([lat, lon]);
+      }
+
+      function setMarkerStatus(id, status) {
+        const marker = markers.get(id);
+        if (!marker) { return; }
+        marker.setIcon(markerIcon(status));
       }
 
       function addCoverage(id, lat, lon, azimuth, beamwidth, rangeKm, color) {
@@ -299,6 +365,7 @@
       });
       window.addMarker = addMarker;
       window.moveMarker = moveMarker;
+      window.setMarkerStatus = setMarkerStatus;
       window.addLink = addLink;
       window.updateLink = updateLink;
       window.removeLink = removeLink;
@@ -310,6 +377,14 @@
       window.updateCoveragePoints = updateCoveragePoints;
       window.removeCoverage = removeCoverage;
       window.setCoverageVisible = setCoverageVisible;
+      window.clearAll = function () {
+        markers.forEach((m) => map.removeLayer(m));
+        markers.clear();
+        links.forEach((entry) => map.removeLayer(entry.line));
+        links.clear();
+        coverages.forEach((c) => coverageLayer.removeLayer(c));
+        coverages.clear();
+      };
       window.requestElevationPrefetch = requestElevationPrefetch;
 
       ensureBridgeReady(() => {});

@@ -1,20 +1,32 @@
 from __future__ import annotations
 
+from datetime import datetime
 from math import asin, atan2, cos, radians, sin, sqrt
 from uuid import uuid4
 
 from PySide6.QtCore import QPoint, Qt, QTimer
-from PySide6.QtWidgets import QMainWindow, QMenu, QMessageBox, QSplitter, QWidget
+from PySide6.QtWidgets import (
+    QFileDialog,
+    QMainWindow,
+    QMenu,
+    QMessageBox,
+    QSplitter,
+    QWidget,
+)
 
-from app.domain import GeoPoint, Link, LinkKind, NetworkProject, Site, SiteKind
+from app.domain import GeoPoint, Link, LinkKind, NetworkProject, Site, SiteKind, StatusState
 from app.elevation import ElevationProvider
 from app.link_analyzer import LinkAnalyzer
+from app.project_io import load_project, save_project
+from app.monitoring import PingChecker
+from app.ui.monitoring_panel import MonitoringPanel
 from app.ui.inspector import InspectorPanel
 from app.ui.link_profile_dialog import LinkProfileDialog
 from app.ui.link_dialog import SiteLinkDialog
 from app.ui.map_view import MapView
 from app.ui.project_tree import ProjectTree
 from app.ui.site_dialog import SiteDevicesDialog
+from app.ui.monitoring_panel import MonitoringPanel
 
 
 class MainWindow(QMainWindow):
@@ -44,6 +56,7 @@ class MainWindow(QMainWindow):
         self.inspector.link_updated.connect(self._on_inspector_link_updated)
         self.inspector.link_analyze_requested.connect(self._on_link_analyze_requested)
         self.inspector.site_updated.connect(self._on_site_updated)
+        self.monitoring_panel = MonitoringPanel(self)
         self._elevation = ElevationProvider()
         self._link_analyzer = LinkAnalyzer(self._elevation)
         self._prefetch_timer = QTimer(self)
@@ -51,11 +64,22 @@ class MainWindow(QMainWindow):
         self._prefetch_timer.timeout.connect(self._prefetch_elevation_for_view)
         self._pending_bounds = None
         self._pending_zoom = None
+        self._site_status_cache: dict[str, StatusState] = {}
+        self._monitor_timer = QTimer(self)
+        self._monitor_timer.setInterval(1000)
+        self._monitor_timer.timeout.connect(self._refresh_monitoring)
+        self._monitor_timer.start()
+
+        right_splitter = QSplitter(Qt.Orientation.Vertical, self)
+        right_splitter.addWidget(self.inspector)
+        right_splitter.addWidget(self.monitoring_panel)
+        right_splitter.setStretchFactor(0, 2)
+        right_splitter.setStretchFactor(1, 1)
 
         splitter = QSplitter(self)
         splitter.addWidget(self.project_tree)
         splitter.addWidget(self.map_view)
-        splitter.addWidget(self.inspector)
+        splitter.addWidget(right_splitter)
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 5)
         splitter.setStretchFactor(2, 1)
@@ -65,15 +89,45 @@ class MainWindow(QMainWindow):
         self._init_toolbar()
         self._site_counter = 1
         self.destroyed.connect(self._cleanup_on_close)
+        self._link_mode = False
+        self._project_path: str | None = None
+        self._dirty = False
+        self._autosave_timer = QTimer(self)
+        self._autosave_timer.setInterval(20000)
+        self._autosave_timer.timeout.connect(self._autosave)
+        self._autosave_timer.start()
+        self._ping_checker = PingChecker(self._all_devices())
+        self._ping_checker.status_updated.connect(self._on_device_ping_status)
+        self._ping_checker.start()
 
     def closeEvent(self, event):  # noqa: N802
+        if self._dirty:
+            response = QMessageBox.question(
+                self,
+                "Зберегти зміни?",
+                "Є незбережені зміни. Зберегти перед виходом?",
+                QMessageBox.StandardButton.Yes
+                | QMessageBox.StandardButton.No
+                | QMessageBox.StandardButton.Cancel,
+            )
+            if response == QMessageBox.StandardButton.Cancel:
+                event.ignore()
+                return
+            if response == QMessageBox.StandardButton.Yes:
+                self._save_project()
         self._cleanup_on_close()
         super().closeEvent(event)
-        self._link_mode = False
 
     def _init_toolbar(self) -> None:
         toolbar = self.addToolBar("Головна")
-        toolbar.addAction("Новий проєкт")
+        new_action = toolbar.addAction("Новий проєкт")
+        new_action.triggered.connect(self._new_project)
+        open_action = toolbar.addAction("Відкрити")
+        open_action.triggered.connect(self._open_project)
+        save_action = toolbar.addAction("Зберегти")
+        save_action.triggered.connect(self._save_project)
+        save_as_action = toolbar.addAction("Зберегти як")
+        save_as_action.triggered.connect(self._save_project_as)
         self._add_link_action = toolbar.addAction("Додати лінк")
         self._add_link_action.setCheckable(True)
         self._add_link_action.toggled.connect(self._toggle_link_mode)
@@ -156,6 +210,9 @@ class MainWindow(QMainWindow):
         self.map_view.add_marker(site.id, site.name, self._site_kind_label(site.kind.value), lat, lon)
         self._update_site_coverage(site)
         self.inspector.show_site(site)
+        self._dirty = True
+        self._ping_checker.set_devices(self._all_devices())
+        self._refresh_monitoring()
 
     def _on_map_request_move_node(
         self, site_id: str, lat: float, lon: float, prev_lat: float, prev_lon: float
@@ -198,6 +255,7 @@ class MainWindow(QMainWindow):
             current_id = self.project_tree.currentItem().data(0, Qt.ItemDataRole.UserRole)
             if current_id == site_id:
                 self.inspector.show_site(site)
+        self._dirty = True
 
     def _on_map_select_node(self, site_id: str) -> None:
         self.project_tree.select_node(site_id)
@@ -210,6 +268,8 @@ class MainWindow(QMainWindow):
         self.inspector.set_site_elevation(elevation, self._elevation.available)
         dialog = SiteDevicesDialog(site, self)
         dialog.exec()
+        self._ping_checker.set_devices(self._all_devices())
+        self._refresh_monitoring()
 
     def _on_map_select_link(self, link_id: str) -> None:
         link = self._project.links.get(link_id)
@@ -301,6 +361,7 @@ class MainWindow(QMainWindow):
             site_b.location.lat,
             site_b.location.lon,
         )
+        self._dirty = True
 
     def _on_map_request_delete_link(self, link_id: str) -> None:
         link = self._project.links.get(link_id)
@@ -315,6 +376,7 @@ class MainWindow(QMainWindow):
         self._project.remove_link(link_id)
         self.project_tree.set_project(self._project)
         self.map_view.remove_link(link_id)
+        self._dirty = True
 
     def _on_inspector_link_updated(self, link_id: str, data: dict) -> None:
         link = self._project.links.get(link_id)
@@ -349,6 +411,7 @@ class MainWindow(QMainWindow):
             )
         self.project_tree.set_project(self._project)
         self.inspector.show_link(link, site_a.name if site_a else "—", site_b.name if site_b else "—")
+        self._dirty = True
 
     def _on_site_updated(self, site_id: str, data: dict) -> None:
         site = self._project.sites.get(site_id)
@@ -372,6 +435,7 @@ class MainWindow(QMainWindow):
                         self._link_info(link, site_a),
                         link.distance_km,
                     )
+        self._dirty = True
 
     def _on_link_analyze_requested(self, link_id: str) -> None:
         link = self._project.links.get(link_id)
@@ -465,7 +529,134 @@ class MainWindow(QMainWindow):
             )
 
     def _cleanup_on_close(self) -> None:
+        if self._dirty:
+            self._autosave()
         self._elevation.clear_cache()
+
+    def _new_project(self) -> None:
+        if self._dirty and not self._confirm_action("Підтвердження", "Є незбережені зміни. Продовжити?"):
+            return
+        self._project = NetworkProject(id="default", name="Новий проєкт")
+        self._project_path = None
+        self._dirty = False
+        self.project_tree.set_project(self._project)
+        self.map_view.clear_all()
+        self.inspector.show_site(None)
+        self._ping_checker.set_devices([])
+        self._refresh_monitoring()
+
+    def _open_project(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Відкрити проєкт", "", "NetProj (*.netproj)")
+        if not path:
+            return
+        self._project = load_project(path)
+        self._project_path = path
+        self._dirty = False
+        self.project_tree.set_project(self._project)
+        self.map_view.clear_all()
+        for site in self._project.sites.values():
+            self.map_view.add_marker(
+                site.id,
+                site.name,
+                self._site_kind_label(site.kind.value),
+                site.location.lat,
+                site.location.lon,
+            )
+            self._update_site_coverage(site)
+        for link in self._project.links.values():
+            site_a = self._project.sites.get(link.site_a_id)
+            site_b = self._project.sites.get(link.site_b_id)
+            if site_a and site_b:
+                self.map_view.add_link(
+                    link.id,
+                    self._link_label(link.kind),
+                    self._link_kind_value(link.kind),
+                    self._link_info(link, site_a),
+                    link.distance_km,
+                    site_a.location.lat,
+                    site_a.location.lon,
+                    site_b.location.lat,
+                    site_b.location.lon,
+                )
+        self._ping_checker.set_devices(self._all_devices())
+        self._refresh_monitoring()
+
+    def _save_project(self) -> None:
+        if not self._project_path:
+            self._save_project_as()
+            return
+        save_project(self._project_path, self._project)
+        self._dirty = False
+
+    def _save_project_as(self) -> None:
+        path, _ = QFileDialog.getSaveFileName(self, "Зберегти проєкт", "", "NetProj (*.netproj)")
+        if not path:
+            return
+        if not path.endswith(".netproj"):
+            path += ".netproj"
+        self._project_path = path
+        save_project(path, self._project)
+        self._dirty = False
+
+    def _autosave(self) -> None:
+        if not self._project_path:
+            return
+        save_project(self._project_path, self._project)
+        self._dirty = False
+
+    def _all_devices(self) -> list:
+        devices = []
+        for site in self._project.sites.values():
+            devices.extend(site.devices.values())
+        return devices
+
+    def _on_device_ping_status(self, device_id: str, state: str, rtt_ms: float) -> None:
+        for site in self._project.sites.values():
+            device = site.devices.get(device_id)
+            if device is None:
+                continue
+            if device.metadata.get("manual_status"):
+                return
+            device.status.state = StatusState(state)
+            device.status.last_seen = datetime.utcnow()
+            device.status.rtt_ms = rtt_ms
+            break
+        self._refresh_monitoring()
+
+    def _refresh_monitoring(self) -> None:
+        problems = []
+        total = len(self._project.sites)
+        up_count = 0
+        for site in self._project.sites.values():
+            status = self._site_status(site)
+            if status == StatusState.UP:
+                up_count += 1
+            else:
+                problems.append(f"{site.name} — {status.value}")
+            previous = self._site_status_cache.get(site.id)
+            if previous and previous != status:
+                self.monitoring_panel.add_event(
+                    f"{datetime.utcnow().strftime('%H:%M:%S')} {site.name}: {previous.value} → {status.value}"
+                )
+            self._site_status_cache[site.id] = status
+            self.map_view.set_marker_status(site.id, status.value)
+        percent = (up_count / total * 100) if total else 0.0
+        self.monitoring_panel.set_availability(percent)
+        self.monitoring_panel.set_problems(problems)
+
+    @staticmethod
+    def _site_status(site: Site) -> StatusState:
+        devices = list(site.devices.values())
+        if not devices:
+            return StatusState.UNKNOWN
+        uplinks = [d for d in devices if d.is_uplink]
+        if any(d.status.state == StatusState.DOWN for d in uplinks):
+            return StatusState.DOWN
+        if any(d.status.state == StatusState.DOWN for d in devices):
+            return StatusState.DEGRADED
+        if all(d.status.state == StatusState.UP for d in devices):
+            return StatusState.UP
+        return StatusState.UNKNOWN
 
     @staticmethod
     def _coverage_color(antenna_type: str | None) -> str:

@@ -1,0 +1,111 @@
+{
+  "schema_version": 1,
+  "saved_at": "2026-01-28T11:10:12.274730",
+  "project": {
+    "id": "default",
+    "name": "Новий проєкт",
+    "notes": [],
+    "sites": {
+      "8e13f25e": {
+        "id": "8e13f25e",
+        "name": "CORE 1",
+        "kind": "core",
+        "location": {
+          "lat": 50.46231246017257,
+          "lon": 30.46714782714844,
+          "altitude_m": null
+        },
+        "antenna": {
+          "antenna_type": "sector",
+          "azimuth_deg": 0.0,
+          "beamwidth_deg": 120.0,
+          "altitude_m": null,
+          "height_m": null,
+          "gain_dbi": 12.0
+        },
+        "devices": {},
+        "links": {},
+        "notes": [],
+        "metadata": {}
+      },
+      "8365ded2": {
+        "id": "8365ded2",
+        "name": "POP 2",
+        "kind": "pop",
+        "location": {
+          "lat": 50.47236489098385,
+          "lon": 30.592117309570316,
+          "altitude_m": null
+        },
+        "antenna": {
+          "antenna_type": "sector",
+          "azimuth_deg": 0.0,
+          "beamwidth_deg": 120.0,
+          "altitude_m": null,
+          "height_m": null,
+          "gain_dbi": 12.0
+        },
+        "devices": {},
+        "links": {},
+        "notes": [],
+        "metadata": {}
+      },
+      "124a2073": {
+        "id": "124a2073",
+        "name": "CPE 3",
+        "kind": "cpe",
+        "location": {
+          "lat": 50.47673484653018,
+          "lon": 30.62919616699219,
+          "altitude_m": null
+        },
+        "antenna": {
+          "antenna_type": "sector",
+          "azimuth_deg": 0.0,
+          "beamwidth_deg": 120.0,
+          "altitude_m": null,
+          "height_m": null,
+          "gain_dbi": 12.0
+        },
+        "devices": {},
+        "links": {},
+        "notes": [],
+        "metadata": {}
+      }
+    },
+    "links": {
+      "0a7d9b26": {
+        "id": "0a7d9b26",
+        "name": "CORE 1 ↔ POP 2",
+        "kind": "ptp",
+        "site_a_id": "8e13f25e",
+        "site_b_id": "8365ded2",
+        "frequency_ghz": 345646.0,
+        "ssid": "sezrwert",
+        "password": "sfgsfg",
+        "link_type": null,
+        "cable_type": null,
+        "distance_km": 8.915384352114748,
+        "channel_width_mhz": null,
+        "capacity_mbps": null,
+        "metadata": {}
+      },
+      "5a179d01": {
+        "id": "5a179d01",
+        "name": "POP 2 ↔ CPE 3",
+        "kind": "ptp",
+        "site_a_id": "8365ded2",
+        "site_b_id": "124a2073",
+        "frequency_ghz": 555.0,
+        "ssid": "івап",
+        "password": "563 а",
+        "link_type": null,
+        "cable_type": null,
+        "distance_km": 2.668564202420777,
+        "channel_width_mhz": null,
+        "capacity_mbps": null,
+        "metadata": {}
+      }
+    }
+  }
+}

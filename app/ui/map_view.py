@@ -109,6 +109,9 @@ class MapView(QWebEngineView):
         )
         self.page().runJavaScript(js)
 
+    def set_marker_status(self, node_id: str, status: str) -> None:
+        self.page().runJavaScript(f"setMarkerStatus({node_id!r}, {status!r});")
+
     def add_coverage(
         self,
         site_id: str,
@@ -148,6 +151,9 @@ class MapView(QWebEngineView):
 
     def set_coverage_visible(self, enabled: bool) -> None:
         self.page().runJavaScript(f"setCoverageVisible({str(enabled).lower()});")
+
+    def clear_all(self) -> None:
+        self.page().runJavaScript("clearAll();")
 
     def add_link(
         self,

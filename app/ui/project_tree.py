@@ -31,7 +31,8 @@ class ProjectTree(QTreeWidget):
             self._node_items[site.id] = item
 
             for device in site.devices.values():
-                child = QTreeWidgetItem([f"{device.name} ({device.device_type.value})"])
+                dtype = device.device_type.value if hasattr(device.device_type, "value") else str(device.device_type)
+                child = QTreeWidgetItem([f"{device.name} ({dtype})"])
                 child.setData(0, Qt.ItemDataRole.UserRole, f"{site.id}:{device.id}")
                 item.addChild(child)
 

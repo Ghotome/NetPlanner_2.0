@@ -80,6 +80,7 @@ class Device:
     notes_text: Optional[str] = None
     notes: List[ConfigNote] = field(default_factory=list)
     status: Status = field(default_factory=Status)
+    is_uplink: bool = False
     metadata: Dict[str, str] = field(default_factory=dict)
 
 

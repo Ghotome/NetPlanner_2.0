@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from app.domain import CableType, Device, DeviceLink, DeviceType, LinkType, Site
+from app.domain import CableType, Device, DeviceLink, DeviceType, LinkType, Site, StatusState
 
 
 class PortHandle(QGraphicsEllipseItem):
@@ -37,13 +37,14 @@ class PortHandle(QGraphicsEllipseItem):
 
 
 class DeviceNodeItem(QGraphicsEllipseItem):
-    def __init__(self, device: Device, on_port_pressed) -> None:
+    def __init__(self, device: Device, on_port_pressed, on_device_menu) -> None:
         super().__init__(-22, -22, 44, 44)
         self.device = device
         self._hovering = False
         self._hover_token = None
         self._tooltip_pos = None
         self._on_port_pressed = on_port_pressed
+        self._on_device_menu = on_device_menu
         self.setBrush(QBrush(Qt.GlobalColor.white))
         self.setPen(QPen(Qt.GlobalColor.black, 1))
         self.setFlags(
@@ -52,9 +53,11 @@ class DeviceNodeItem(QGraphicsEllipseItem):
             | QGraphicsEllipseItem.GraphicsItemFlag.ItemSendsGeometryChanges
         )
         self.setAcceptHoverEvents(True)
+        self.setAcceptedMouseButtons(Qt.MouseButton.LeftButton | Qt.MouseButton.RightButton)
         label = QGraphicsTextItem(device.name, self)
         label.setPos(-20, 26)
         self._ports = self._create_ports()
+        self._apply_status_style()
 
     def itemChange(self, change, value):
         if change == QGraphicsEllipseItem.GraphicsItemChange.ItemPositionHasChanged:
@@ -88,6 +91,20 @@ class DeviceNodeItem(QGraphicsEllipseItem):
         self._hover_token = None
         QToolTip.hideText()
         super().hoverLeaveEvent(event)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.RightButton:
+            self._on_device_menu(self, event.screenPos())
+            return
+        super().mousePressEvent(event)
+
+    def _apply_status_style(self) -> None:
+        color = {
+            StatusState.UP: Qt.GlobalColor.green,
+            StatusState.DOWN: Qt.GlobalColor.red,
+            StatusState.DEGRADED: Qt.GlobalColor.darkYellow,
+        }.get(self.device.status.state, Qt.GlobalColor.lightGray)
+        self.setBrush(QBrush(color))
 
     def _create_ports(self) -> dict[str, PortHandle]:
         ports = {
@@ -225,7 +242,7 @@ class SiteDevicesDialog(QDialog):
         items = []
         x = 0
         for device in self._site.devices.values():
-            item = DeviceNodeItem(device, self._on_port_pressed)
+            item = DeviceNodeItem(device, self._on_port_pressed, self._on_device_menu)
             pos = device.position or (x, 0)
             item.setPos(QPointF(pos[0], pos[1]))
             item.setToolTip(device.name)
@@ -249,6 +266,26 @@ class SiteDevicesDialog(QDialog):
             return
         device = dialog.to_device()
         self._site.add_device(device)
+        self._refresh_scene()
+
+    def _on_device_menu(self, item: DeviceNodeItem, screen_pos) -> None:
+        menu = QMenu(self)
+        status_up = menu.addAction("Статус: UP")
+        status_down = menu.addAction("Статус: DOWN")
+        status_deg = menu.addAction("Статус: DEGRADED")
+        toggle_uplink = menu.addAction("Перемкнути uplink")
+        chosen = menu.exec(screen_pos)
+        if chosen == status_up:
+            item.device.status.state = StatusState.UP
+            item.device.metadata["manual_status"] = True
+        elif chosen == status_down:
+            item.device.status.state = StatusState.DOWN
+            item.device.metadata["manual_status"] = True
+        elif chosen == status_deg:
+            item.device.status.state = StatusState.DEGRADED
+            item.device.metadata["manual_status"] = True
+        elif chosen == toggle_uplink:
+            item.device.is_uplink = not item.device.is_uplink
         self._refresh_scene()
 
     def _confirm_action(self, title: str, message: str) -> bool:

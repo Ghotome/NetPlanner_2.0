@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.8.0] - 2026-01-27
+### Added
+- Project save/load (.netproj) with autosave and schema version
+
+## [0.7.0] - 2026-01-27
+### Added
+- Coverage sectors with antenna parameters and DEM-aware clipping
+
 ## [0.6.0] - 2026-01-27
 ### Added
 - Link analyzer (LOS) with elevation profile dialog for PtP links

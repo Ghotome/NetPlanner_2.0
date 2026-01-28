@@ -18,6 +18,7 @@ from app.domain import CableType, Link, LinkKind, LinkType, Site, SiteKind
 
 class InspectorPanel(QWidget):
     link_updated = Signal(str, dict)
+    link_analyze_requested = Signal(str)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -45,6 +46,7 @@ class InspectorPanel(QWidget):
         self._link_kind.addItem("Ethernet", LinkKind.ETHERNET)
         self._link_kind.currentIndexChanged.connect(self._toggle_link_fields)
         self._label_frequency = QLabel("Частота (ГГц):")
+        self._label_antenna = QLabel("Висота антени (м):")
         self._label_ssid = QLabel("SSID:")
         self._label_password = QLabel("Пароль:")
         self._label_link_type = QLabel("Тип лінка:")
@@ -56,6 +58,10 @@ class InspectorPanel(QWidget):
         freq_validator = QDoubleValidator(0.0, 100.0, 6, self)
         freq_validator.setLocale(QLocale.c())
         self._link_frequency.setValidator(freq_validator)
+        self._link_antenna = QLineEdit(self)
+        antenna_validator = QDoubleValidator(0.0, 200.0, 2, self)
+        antenna_validator.setLocale(QLocale.c())
+        self._link_antenna.setValidator(antenna_validator)
         self._link_ssid = QLineEdit(self)
         self._link_password = QLineEdit(self)
 
@@ -69,17 +75,21 @@ class InspectorPanel(QWidget):
 
         self._apply_btn = QPushButton("Застосувати", self)
         self._apply_btn.clicked.connect(self._apply_link_changes)
+        self._analyze_btn = QPushButton("Аналіз траси", self)
+        self._analyze_btn.clicked.connect(self._request_link_analysis)
 
         link_layout.addRow(QLabel("Назва:"), self._link_name)
         link_layout.addRow(QLabel("Тип:"), self._link_kind)
         link_layout.addRow(QLabel("Між:"), self._link_between)
         link_layout.addRow(QLabel("Дистанція:"), self._link_distance)
         link_layout.addRow(self._label_frequency, self._link_frequency)
+        link_layout.addRow(self._label_antenna, self._link_antenna)
         link_layout.addRow(self._label_ssid, self._link_ssid)
         link_layout.addRow(self._label_password, self._link_password)
         link_layout.addRow(self._label_link_type, self._link_type)
         link_layout.addRow(self._label_cable_type, self._cable_type)
         link_layout.addRow(self._apply_btn)
+        link_layout.addRow(self._analyze_btn)
 
         layout = QVBoxLayout(self)
         layout.addWidget(self._site_group)
@@ -121,10 +131,12 @@ class InspectorPanel(QWidget):
         self._set_kind_combo(kind_value)
         if kind_value in ("ptp", "ptmp"):
             self._link_frequency.setText("" if link.frequency_ghz is None else str(link.frequency_ghz))
+            self._link_antenna.setText("" if link.antenna_height_m is None else str(link.antenna_height_m))
             self._link_ssid.setText(link.ssid or "")
             self._link_password.setText(link.password or "")
         else:
             self._link_frequency.setText("")
+            self._link_antenna.setText("")
             self._link_ssid.setText("")
             self._link_password.setText("")
             if link.link_type is not None:
@@ -134,6 +146,8 @@ class InspectorPanel(QWidget):
         self._toggle_link_fields()
         self._site_group.setVisible(False)
         self._link_group.setVisible(True)
+        kind_value = link.kind.value if hasattr(link.kind, "value") else str(link.kind)
+        self._analyze_btn.setVisible(kind_value == "ptp")
 
     def set_site_elevation(self, elevation_m: float | None, available: bool = True) -> None:
         if elevation_m is None:
@@ -159,7 +173,16 @@ class InspectorPanel(QWidget):
     def _toggle_link_fields(self) -> None:
         kind = self._link_kind.currentData()
         is_wireless = kind in (LinkKind.PTP, LinkKind.PTMP)
-        for widget in (self._label_frequency, self._link_frequency, self._label_ssid, self._link_ssid, self._label_password, self._link_password):
+        for widget in (
+            self._label_frequency,
+            self._link_frequency,
+            self._label_antenna,
+            self._link_antenna,
+            self._label_ssid,
+            self._link_ssid,
+            self._label_password,
+            self._link_password,
+        ):
             widget.setVisible(is_wireless)
         for widget in (self._label_link_type, self._link_type, self._label_cable_type, self._cable_type):
             widget.setVisible(not is_wireless)
@@ -184,9 +207,15 @@ class InspectorPanel(QWidget):
             "name": self._link_name.text().strip() or "Лінк",
             "kind": kind,
             "frequency_ghz": float(self._link_frequency.text()) if is_wireless and self._link_frequency.text().strip() else None,
+            "antenna_height_m": float(self._link_antenna.text()) if is_wireless and self._link_antenna.text().strip() else None,
             "ssid": self._link_ssid.text().strip() if is_wireless else None,
             "password": self._link_password.text().strip() if is_wireless else None,
             "link_type": None if is_wireless else self._link_type.currentData(),
             "cable_type": None if is_wireless else self._cable_type.currentData(),
         }
         self.link_updated.emit(self._current_link_id, payload)
+
+    def _request_link_analysis(self) -> None:
+        if self._current_link_id is None:
+            return
+        self.link_analyze_requested.emit(self._current_link_id)

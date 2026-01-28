@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.6.0] - 2026-01-27
+### Added
+- Link analyzer (LOS) with elevation profile dialog for PtP links
+
+## [0.5.0] - 2026-01-27
+### Added
+- Elevation (DEM) overlay with legend and caching
+
 ## [0.4.0] - 2026-01-27
 ### Added
 - Site-to-site links with link type selection on map

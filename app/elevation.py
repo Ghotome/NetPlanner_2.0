@@ -20,6 +20,23 @@ class ElevationProvider:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.available = Image is not None
 
+    def clear_cache(self) -> None:
+        if not self.cache_dir.exists():
+            return
+        for path in self.cache_dir.rglob("*"):
+            if path.is_file():
+                path.unlink(missing_ok=True)
+        for path in sorted(self.cache_dir.glob("**/*"), reverse=True):
+            if path.is_dir():
+                try:
+                    path.rmdir()
+                except OSError:
+                    continue
+        try:
+            self.cache_dir.rmdir()
+        except OSError:
+            pass
+
     def get_elevation(self, lat: float, lon: float) -> Optional[float]:
         if Image is None:
             return None

@@ -8,7 +8,9 @@ from PySide6.QtWidgets import QMainWindow, QMenu, QMessageBox, QSplitter, QWidge
 
 from app.domain import GeoPoint, Link, LinkKind, NetworkProject, Site, SiteKind
 from app.elevation import ElevationProvider
+from app.link_analyzer import LinkAnalyzer
 from app.ui.inspector import InspectorPanel
+from app.ui.link_profile_dialog import LinkProfileDialog
 from app.ui.link_dialog import SiteLinkDialog
 from app.ui.map_view import MapView
 from app.ui.project_tree import ProjectTree
@@ -40,7 +42,9 @@ class MainWindow(QMainWindow):
 
         self.inspector = InspectorPanel(self)
         self.inspector.link_updated.connect(self._on_inspector_link_updated)
+        self.inspector.link_analyze_requested.connect(self._on_link_analyze_requested)
         self._elevation = ElevationProvider()
+        self._link_analyzer = LinkAnalyzer(self._elevation)
         self._prefetch_timer = QTimer(self)
         self._prefetch_timer.setSingleShot(True)
         self._prefetch_timer.timeout.connect(self._prefetch_elevation_for_view)
@@ -59,6 +63,11 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(splitter)
         self._init_toolbar()
         self._site_counter = 1
+        self.destroyed.connect(self._cleanup_on_close)
+
+    def closeEvent(self, event):  # noqa: N802
+        self._cleanup_on_close()
+        super().closeEvent(event)
         self._link_mode = False
 
     def _init_toolbar(self) -> None:
@@ -256,6 +265,7 @@ class MainWindow(QMainWindow):
             kind=kind,
             site_a_id=site_a.id,
             site_b_id=site_b.id,
+            antenna_height_m=dialog.antenna_height() if is_wireless else None,
             frequency_ghz=dialog.frequency_ghz() if is_wireless else None,
             ssid=dialog.ssid() if is_wireless else None,
             password=dialog.password() if is_wireless else None,
@@ -298,6 +308,7 @@ class MainWindow(QMainWindow):
         link.name = data["name"]
         link.kind = data["kind"]
         link.frequency_ghz = data["frequency_ghz"]
+        link.antenna_height_m = data.get("antenna_height_m")
         link.ssid = data["ssid"]
         link.password = data["password"]
         link.link_type = data["link_type"]
@@ -325,6 +336,20 @@ class MainWindow(QMainWindow):
         self.project_tree.set_project(self._project)
         self.inspector.show_link(link, site_a.name if site_a else "—", site_b.name if site_b else "—")
 
+    def _on_link_analyze_requested(self, link_id: str) -> None:
+        link = self._project.links.get(link_id)
+        if link is None:
+            return
+        site_a = self._project.sites.get(link.site_a_id)
+        site_b = self._project.sites.get(link.site_b_id)
+        if site_a is None or site_b is None:
+            return
+        profile = self._link_analyzer.analyze(
+            site_a, site_b, samples=30, antenna_height_m=link.antenna_height_m or 0.0
+        )
+        dialog = LinkProfileDialog(profile, self)
+        dialog.exec()
+
     @staticmethod
     def _site_kind_label(kind_value: str) -> str:
         return {
@@ -350,6 +375,7 @@ class MainWindow(QMainWindow):
             return (
                 f"Тип: {kind_value}\\n"
                 f"Частота: {link.frequency_ghz or '-'} ГГц\\n"
+                f"Висота антени: {link.antenna_height_m or '-'} м\\n"
                 f"SSID: {link.ssid or '-'}\\n"
                 f"Пароль: {link.password or '-'}\\n"
                 f"Дистанція: {distance_text}"
@@ -371,3 +397,6 @@ class MainWindow(QMainWindow):
         a = sin(dlat / 2) ** 2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlon / 2) ** 2
         c = 2 * asin(sqrt(a))
         return r * c
+
+    def _cleanup_on_close(self) -> None:
+        self._elevation.clear_cache()

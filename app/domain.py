@@ -137,6 +137,7 @@ class Link:
     kind: LinkKind
     site_a_id: str
     site_b_id: str
+    antenna_height_m: Optional[float] = None
     frequency_ghz: Optional[float] = None
     ssid: Optional[str] = None
     password: Optional[str] = None

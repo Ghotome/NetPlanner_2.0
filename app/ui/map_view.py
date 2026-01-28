@@ -18,7 +18,9 @@ class MapBridge(QObject):
         on_request_delete_link: Callable[[str], None],
         on_select_link: Callable[[str], None],
         on_prefetch_elevation: Callable[[float, float, float, float, int], None],
+        on_request_rename_site: Callable[[str], None],
         on_select_node: Callable[[str], None],
+        on_open_site: Callable[[str], None],
     ) -> None:
         super().__init__()
         self._on_show_context_menu = on_show_context_menu
@@ -27,7 +29,9 @@ class MapBridge(QObject):
         self._on_request_delete_link = on_request_delete_link
         self._on_select_link = on_select_link
         self._on_prefetch_elevation = on_prefetch_elevation
+        self._on_request_rename_site = on_request_rename_site
         self._on_select_node = on_select_node
+        self._on_open_site = on_open_site
 
     @Slot(float, float, int, int)
     def showContextMenu(self, lat: float, lon: float, x: int, y: int) -> None:
@@ -46,6 +50,14 @@ class MapBridge(QObject):
     @Slot(str)
     def selectLink(self, link_id: str) -> None:
         self._on_select_link(link_id)
+
+    @Slot(str)
+    def requestRenameSite(self, site_id: str) -> None:
+        self._on_request_rename_site(site_id)
+
+    @Slot(str)
+    def openSite(self, site_id: str) -> None:
+        self._on_open_site(site_id)
 
     @Slot(float, float, float, float, int)
     def prefetchElevation(
@@ -71,7 +83,9 @@ class MapView(QWebEngineView):
         on_request_delete_link: Callable[[str], None],
         on_select_link: Callable[[str], None],
         on_prefetch_elevation: Callable[[float, float, float, float, int], None],
+        on_request_rename_site: Callable[[str], None],
         on_select_node: Callable[[str], None],
+        on_open_site: Callable[[str], None],
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -82,7 +96,9 @@ class MapView(QWebEngineView):
             on_request_delete_link,
             on_select_link,
             on_prefetch_elevation,
+            on_request_rename_site,
             on_select_node,
+            on_open_site,
         )
         self._channel = QWebChannel(self)
         self._channel.registerObject("bridge", self._bridge)
@@ -111,6 +127,9 @@ class MapView(QWebEngineView):
 
     def set_marker_status(self, node_id: str, status: str) -> None:
         self.page().runJavaScript(f"setMarkerStatus({node_id!r}, {status!r});")
+
+    def update_marker_label(self, node_id: str, name: str, kind: str) -> None:
+        self.page().runJavaScript(f"updateMarkerLabel({node_id!r}, {name!r}, {kind!r});")
 
     def add_coverage(
         self,

@@ -7,10 +7,12 @@ from uuid import uuid4
 from PySide6.QtCore import QPoint, Qt, QTimer
 from PySide6.QtWidgets import (
     QFileDialog,
+    QInputDialog,
     QMainWindow,
     QMenu,
     QMessageBox,
     QSplitter,
+    QTreeWidgetItem,
     QWidget,
 )
 
@@ -40,6 +42,7 @@ class MainWindow(QMainWindow):
         self.project_tree = ProjectTree(self)
         self.project_tree.set_project(project)
         self.project_tree.itemSelectionChanged.connect(self._on_tree_selection_changed)
+        self.project_tree.itemDoubleClicked.connect(self._on_tree_item_double_clicked)
 
         self.map_view = MapView(
             on_show_context_menu=self._on_map_context_menu,
@@ -48,7 +51,9 @@ class MainWindow(QMainWindow):
             on_request_delete_link=self._on_map_request_delete_link,
             on_select_link=self._on_map_select_link,
             on_prefetch_elevation=self._on_prefetch_elevation,
+            on_request_rename_site=self._on_map_request_rename_site,
             on_select_node=self._on_map_select_node,
+            on_open_site=self._on_map_open_site,
             parent=self,
         )
 
@@ -87,6 +92,8 @@ class MainWindow(QMainWindow):
 
         self.setCentralWidget(splitter)
         self._init_toolbar()
+        self._init_menu_bar()
+        self._apply_styles()
         self._site_counter = 1
         self.destroyed.connect(self._cleanup_on_close)
         self._link_mode = False
@@ -99,6 +106,9 @@ class MainWindow(QMainWindow):
         self._ping_checker = PingChecker(self._all_devices())
         self._ping_checker.status_updated.connect(self._on_device_ping_status)
         self._ping_checker.start()
+
+        self.project_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.project_tree.customContextMenuRequested.connect(self._on_tree_context_menu)
 
     def closeEvent(self, event):  # noqa: N802
         if self._dirty:
@@ -162,6 +172,48 @@ class MainWindow(QMainWindow):
 
     def _toggle_coverage_layer(self, enabled: bool) -> None:
         self.map_view.set_coverage_visible(enabled)
+
+    def _init_menu_bar(self) -> None:
+        menu = self.menuBar()
+        menu.setNativeMenuBar(False)
+        menu.clear()
+        file_menu = menu.addMenu("Файл")
+        file_menu.addAction("Новий проєкт", self._new_project, "Ctrl+N")
+        file_menu.addAction("Відкрити", self._open_project, "Ctrl+O")
+        file_menu.addAction("Зберегти", self._save_project, "Ctrl+S")
+        file_menu.addAction("Зберегти як", self._save_project_as, "Ctrl+Shift+S")
+        file_menu.addSeparator()
+        file_menu.addAction("Вихід", self.close, "Ctrl+Q")
+
+        edit_menu = menu.addMenu("Правка")
+        edit_menu.addAction("Перейменувати", self._rename_selected, "F2")
+
+        view_menu = menu.addMenu("Вигляд")
+        view_menu.addAction(self._elevation_action)
+        view_menu.addAction(self._coverage_action)
+
+        tools_menu = menu.addMenu("Інструменти")
+        tools_menu.addAction(self._add_link_action)
+
+        help_menu = menu.addMenu("Довідка")
+        help_menu.addAction("Про програму", self._about)
+
+    def _apply_styles(self) -> None:
+        self.setStyleSheet(
+            """
+            QMainWindow { background: #f6f7fb; }
+            QToolBar { background: rgba(255,255,255,0.85); border-bottom: 1px solid #e5e7eb; }
+            QSplitter::handle { background: #e5e7eb; }
+            QTreeWidget, QListWidget { background: rgba(255,255,255,0.9); border: 1px solid #e5e7eb; }
+            QLineEdit, QComboBox { background: #fff; border: 1px solid #e5e7eb; padding: 4px; border-radius: 4px; }
+            QPushButton { background: #f3f4f6; border: 1px solid #e5e7eb; padding: 6px 8px; border-radius: 6px; }
+            QPushButton:hover { background: #e5e7eb; }
+            QLabel { color: #111827; }
+            """
+        )
+
+    def _about(self) -> None:
+        QMessageBox.information(self, "Про програму", "Network Planner v1.0.0")
 
     def _on_map_context_menu(self, lat: float, lon: float, x: int, y: int) -> None:
         menu = QMenu(self)
@@ -266,10 +318,11 @@ class MainWindow(QMainWindow):
             return
         elevation = self._elevation.get_elevation(site.location.lat, site.location.lon)
         self.inspector.set_site_elevation(elevation, self._elevation.available)
-        dialog = SiteDevicesDialog(site, self)
-        dialog.exec()
         self._ping_checker.set_devices(self._all_devices())
         self._refresh_monitoring()
+
+    def _on_map_open_site(self, site_id: str) -> None:
+        self._open_site_dialog(site_id)
 
     def _on_map_select_link(self, link_id: str) -> None:
         link = self._project.links.get(link_id)
@@ -279,6 +332,18 @@ class MainWindow(QMainWindow):
         site_b = self._project.sites.get(link.site_b_id)
         self.project_tree.select_link(link_id)
         self.inspector.show_link(link, site_a.name if site_a else "—", site_b.name if site_b else "—")
+
+    def _on_map_request_rename_site(self, site_id: str) -> None:
+        site = self._project.sites.get(site_id)
+        if not site:
+            return
+        new_name, ok = QInputDialog.getText(self, "Перейменувати сайт", "Нова назва:", text=site.name)
+        if ok and new_name.strip():
+            site.name = new_name.strip()
+            self.map_view.update_marker_label(site.id, site.name, self._site_kind_label(site.kind.value))
+            self._update_site_coverage(site)
+            self.project_tree.set_project(self._project)
+            self._dirty = True
 
     def _on_tree_selection_changed(self) -> None:
         item = self.project_tree.currentItem()
@@ -306,6 +371,25 @@ class MainWindow(QMainWindow):
             self.inspector.set_site_elevation(elevation, self._elevation.available)
             self.map_view.focus_marker(site.id)
             self._update_site_coverage(site)
+
+    def _on_tree_item_double_clicked(self, item: QTreeWidgetItem, column: int) -> None:
+        if item is None:
+            return
+        node_id = item.data(0, Qt.ItemDataRole.UserRole)
+        if not node_id:
+            return
+        site_id = node_id.split(":", 1)[0] if isinstance(node_id, str) else node_id
+        if isinstance(site_id, str) and site_id in self._project.sites:
+            self._open_site_dialog(site_id)
+
+    def _open_site_dialog(self, site_id: str) -> None:
+        site = self._project.sites.get(site_id)
+        if site is None:
+            return
+        dialog = SiteDevicesDialog(site, self)
+        dialog.exec()
+        self._ping_checker.set_devices(self._all_devices())
+        self._refresh_monitoring()
 
     def _schedule_elevation_prefetch(self) -> None:
         self._prefetch_timer.start(400)
@@ -603,6 +687,64 @@ class MainWindow(QMainWindow):
             return
         save_project(self._project_path, self._project)
         self._dirty = False
+
+    def _on_tree_context_menu(self, pos: QPoint) -> None:
+        item = self.project_tree.itemAt(pos)
+        if item is None:
+            return
+        node_id = item.data(0, Qt.ItemDataRole.UserRole)
+        menu = QMenu(self)
+        rename_action = menu.addAction("Перейменувати")
+        chosen = menu.exec(self.project_tree.viewport().mapToGlobal(pos))
+        if chosen != rename_action:
+            return
+
+        if isinstance(node_id, str) and ":" in node_id:
+            site_id, device_id = node_id.split(":", 1)
+            site = self._project.sites.get(site_id)
+            if not site:
+                return
+            device = site.devices.get(device_id)
+            if not device:
+                return
+            new_name, ok = QInputDialog.getText(self, "Перейменувати пристрій", "Нова назва:", text=device.name)
+            if ok and new_name.strip():
+                device.name = new_name.strip()
+        elif isinstance(node_id, str) and node_id in self._project.links:
+            link = self._project.links.get(node_id)
+            if not link:
+                return
+            new_name, ok = QInputDialog.getText(self, "Перейменувати лінк", "Нова назва:", text=link.name)
+            if ok and new_name.strip():
+                link.name = new_name.strip()
+                site_a = self._project.sites.get(link.site_a_id)
+                if site_a:
+                    self.map_view.update_link_meta(
+                        link.id,
+                        self._link_label(link.kind),
+                        self._link_kind_value(link.kind),
+                        self._link_info(link, site_a),
+                        link.distance_km,
+                    )
+        else:
+            site = self._project.sites.get(node_id)
+            if not site:
+                return
+            new_name, ok = QInputDialog.getText(self, "Перейменувати сайт", "Нова назва:", text=site.name)
+            if ok and new_name.strip():
+                site.name = new_name.strip()
+                self.map_view.update_marker_label(site.id, site.name, self._site_kind_label(site.kind.value))
+                self._update_site_coverage(site)
+
+        self.project_tree.set_project(self._project)
+        self._dirty = True
+
+    def _rename_selected(self) -> None:
+        item = self.project_tree.currentItem()
+        if item is None:
+            return
+        pos = self.project_tree.visualItemRect(item).center()
+        self._on_tree_context_menu(pos)
 
     def _all_devices(self) -> list:
         devices = []

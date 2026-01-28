@@ -124,6 +124,12 @@
         marker.on('click', () => {
           if (bridge) { bridge.selectNode(id); }
         });
+        marker.on('dblclick', () => {
+          if (bridge) { bridge.openSite(id); }
+        });
+        marker.on('contextmenu', () => {
+          if (bridge) { bridge.requestRenameSite(id); }
+        });
         marker.on('mouseover', () => { hoverTargetId = id; });
         marker.on('mouseout', () => { if (hoverTargetId === id) { hoverTargetId = null; } });
         marker.on('mousedown', (e) => {
@@ -149,6 +155,13 @@
         const marker = markers.get(id);
         if (!marker) { return; }
         marker.setLatLng([lat, lon]);
+      }
+
+      function updateMarkerLabel(id, name, kind) {
+        const marker = markers.get(id);
+        if (!marker) { return; }
+        marker.bindPopup(`${name} (${kind})`);
+        marker.bindTooltip(name, { direction: 'top' });
       }
 
       function setMarkerStatus(id, status) {
@@ -365,6 +378,7 @@
       });
       window.addMarker = addMarker;
       window.moveMarker = moveMarker;
+      window.updateMarkerLabel = updateMarkerLabel;
       window.setMarkerStatus = setMarkerStatus;
       window.addLink = addLink;
       window.updateLink = updateLink;

@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.10.0] - 2026-01-27
+### Added
+- Device access actions (WebFig/SSH) from site device context menu
+
 ## [0.8.0] - 2026-01-27
 ### Added
 - Project save/load (.netproj) with autosave and schema version

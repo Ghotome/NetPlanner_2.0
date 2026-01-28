@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from uuid import uuid4
 
-from PySide6.QtCore import QPointF, Qt, QTimer
-from PySide6.QtGui import QBrush, QCursor, QPen
+from PySide6.QtCore import QPointF, Qt, QTimer, QUrl
+from PySide6.QtGui import QBrush, QCursor, QDesktopServices, QPen
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -22,6 +22,8 @@ from PySide6.QtWidgets import (
     QTextEdit,
     QVBoxLayout,
 )
+import subprocess
+import sys
 
 from app.domain import CableType, Device, DeviceLink, DeviceType, LinkType, Site, StatusState
 
@@ -270,12 +272,19 @@ class SiteDevicesDialog(QDialog):
 
     def _on_device_menu(self, item: DeviceNodeItem, screen_pos) -> None:
         menu = QMenu(self)
+        open_web = menu.addAction("Відкрити WebFig")
+        open_ssh = menu.addAction("Відкрити SSH")
+        menu.addSeparator()
         status_up = menu.addAction("Статус: UP")
         status_down = menu.addAction("Статус: DOWN")
         status_deg = menu.addAction("Статус: DEGRADED")
         toggle_uplink = menu.addAction("Перемкнути uplink")
         chosen = menu.exec(screen_pos)
-        if chosen == status_up:
+        if chosen == open_web:
+            self._open_webfig(item.device)
+        elif chosen == open_ssh:
+            self._open_ssh(item.device)
+        elif chosen == status_up:
             item.device.status.state = StatusState.UP
             item.device.metadata["manual_status"] = True
         elif chosen == status_down:
@@ -287,6 +296,34 @@ class SiteDevicesDialog(QDialog):
         elif chosen == toggle_uplink:
             item.device.is_uplink = not item.device.is_uplink
         self._refresh_scene()
+
+    def _open_webfig(self, device: Device) -> None:
+        if not device.ip_address:
+            QMessageBox.information(self, "WebFig", "У пристрою немає IP адреси.")
+            return
+        port = (device.port or "").strip()
+        host = device.ip_address
+        if port:
+            host = f"{host}:{port}"
+        url = QUrl(f"https://{host}/")
+        QDesktopServices.openUrl(url)
+
+    def _open_ssh(self, device: Device) -> None:
+        if not device.ip_address:
+            QMessageBox.information(self, "SSH", "У пристрою немає IP адреси.")
+            return
+        ip = device.ip_address
+        try:
+            if sys.platform.startswith("win"):
+                subprocess.Popen(["cmd", "/c", "start", "ssh", ip])
+            elif sys.platform == "darwin":
+                subprocess.Popen(
+                    ["osascript", "-e", f'tell application "Terminal" to do script "ssh {ip}"']
+                )
+            else:
+                subprocess.Popen(["x-terminal-emulator", "-e", "ssh", ip])
+        except Exception:
+            QMessageBox.information(self, "SSH", "Не вдалося відкрити SSH клієнт.")
 
     def _confirm_action(self, title: str, message: str) -> bool:
         return (

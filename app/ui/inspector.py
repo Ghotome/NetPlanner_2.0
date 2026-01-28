@@ -170,7 +170,7 @@ class InspectorPanel(QWidget):
         self._site_group.setVisible(False)
         self._link_group.setVisible(True)
         kind_value = link.kind.value if hasattr(link.kind, "value") else str(link.kind)
-        self._analyze_btn.setVisible(kind_value == "ptp")
+        self._analyze_btn.setVisible(kind_value in ("ptp", "ptmp"))
 
     def set_site_elevation(self, elevation_m: float | None, available: bool = True) -> None:
         if elevation_m is None:

@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QTreeWidgetItem,
     QWidget,
 )
+from PySide6.QtGui import QAction
 
 from app.domain import GeoPoint, Link, LinkKind, NetworkProject, Site, SiteKind, StatusState
 from app.elevation import ElevationProvider
@@ -91,7 +92,7 @@ class MainWindow(QMainWindow):
         splitter.setSizes([220, 900, 260])
 
         self.setCentralWidget(splitter)
-        self._init_toolbar()
+        self._init_actions()
         self._init_menu_bar()
         self._apply_styles()
         self._site_counter = 1
@@ -128,23 +129,16 @@ class MainWindow(QMainWindow):
         self._cleanup_on_close()
         super().closeEvent(event)
 
-    def _init_toolbar(self) -> None:
-        toolbar = self.addToolBar("Головна")
-        new_action = toolbar.addAction("Новий проєкт")
-        new_action.triggered.connect(self._new_project)
-        open_action = toolbar.addAction("Відкрити")
-        open_action.triggered.connect(self._open_project)
-        save_action = toolbar.addAction("Зберегти")
-        save_action.triggered.connect(self._save_project)
-        save_as_action = toolbar.addAction("Зберегти як")
-        save_as_action.triggered.connect(self._save_project_as)
-        self._add_link_action = toolbar.addAction("Додати лінк")
+    def _init_actions(self) -> None:
+        self._add_link_action = QAction("Додати лінк", self)
         self._add_link_action.setCheckable(True)
         self._add_link_action.toggled.connect(self._toggle_link_mode)
-        self._elevation_action = toolbar.addAction("Шар висот")
+
+        self._elevation_action = QAction("Шар висот", self)
         self._elevation_action.setCheckable(True)
         self._elevation_action.toggled.connect(self._toggle_elevation_layer)
-        self._coverage_action = toolbar.addAction("Покриття")
+
+        self._coverage_action = QAction("Покриття", self)
         self._coverage_action.setCheckable(True)
         self._coverage_action.setChecked(True)
         self._coverage_action.toggled.connect(self._toggle_coverage_layer)

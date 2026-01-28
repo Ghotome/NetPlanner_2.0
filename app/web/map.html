@@ -1,0 +1,407 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Map</title>
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+      crossorigin=""
+    />
+    <style>
+      html, body, #map { height: 100%; margin: 0; }
+      .leaflet-container { background: #0f1720; }
+      .elevation-tiles { filter: saturate(160%) contrast(140%); }
+      .site-marker .site-dot {
+        width: 14px;
+        height: 14px;
+        border-radius: 50%;
+        border: 2px solid #0f1720;
+        box-shadow: 0 0 0 1px rgba(255,255,255,0.4);
+      }
+      .elevation-legend {
+        background: rgba(15, 23, 32, 0.85);
+        color: #fff;
+        padding: 8px 10px;
+        border-radius: 6px;
+        font: 12px/1.2 sans-serif;
+      }
+      .legend-title { font-weight: 600; margin-bottom: 6px; }
+      .legend-bar {
+        width: 180px;
+        height: 8px;
+        background: linear-gradient(90deg, #c0392b 0%, #e67e22 35%, #f1c40f 60%, #27ae60 100%);
+        border-radius: 4px;
+        margin-bottom: 4px;
+      }
+      .legend-labels {
+        display: flex;
+        justify-content: space-between;
+        font-size: 10px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="map"></div>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+      integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+      crossorigin="">
+    </script>
+    <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+    <script>
+      const map = L.map('map', { zoomControl: true }).setView([50.45, 30.52], 11);
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19,
+        attribution: '&copy; OpenStreetMap contributors'
+      }).addTo(map);
+      const elevationLayer = L.tileLayer(
+        'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png',
+        { maxZoom: 15, opacity: 0.65, className: 'elevation-tiles' }
+      );
+      const elevationLegend = L.control({ position: 'bottomleft' });
+      elevationLegend.onAdd = function () {
+        const div = L.DomUtil.create('div', 'elevation-legend');
+        div.innerHTML = `
+          <div class="legend-title">Висота (м)</div>
+          <div class="legend-bar"></div>
+          <div class="legend-labels">
+            <span>0 м</span>
+            <span>500 м</span>
+            <span>1000 м</span>
+            <span>2000 м</span>
+            <span>3000 м</span>
+            <span>4000+ м</span>
+          </div>
+        `;
+        return div;
+      };
+
+      const markers = new Map();
+      const links = new Map();
+      const coverages = new Map();
+      const coverageLayer = L.layerGroup().addTo(map);
+      let bridge = null;
+      let linkMode = false;
+      let dragLine = null;
+      let dragTooltip = null;
+      let dragSourceId = null;
+      let hoverTargetId = null;
+
+      function ensureBridgeReady(cb) {
+        if (bridge) { cb(); return; }
+        if (window.qt && window.qt.webChannelTransport) {
+          new QWebChannel(window.qt.webChannelTransport, (channel) => {
+            bridge = channel.objects.bridge;
+            cb();
+          });
+        }
+      }
+
+      function statusColor(status) {
+        if (status === 'up') return '#22c55e';
+        if (status === 'down') return '#ef4444';
+        if (status === 'degraded') return '#f59e0b';
+        return '#94a3b8';
+      }
+
+      function markerIcon(status) {
+        const color = statusColor(status);
+        return L.divIcon({
+          className: 'site-marker',
+          html: `<div class=\"site-dot\" style=\"background:${color}\"></div>`,
+          iconSize: [18, 18],
+          iconAnchor: [9, 9],
+        });
+      }
+
+      function addMarker(id, name, kind, lat, lon) {
+        const marker = L.marker([lat, lon], { draggable: true, icon: markerIcon('unknown') });
+        marker.addTo(map);
+        marker.bindPopup(`${name} (${kind})`);
+        marker.bindTooltip(name, { direction: 'top' });
+        marker.on('click', () => {
+          if (bridge) { bridge.selectNode(id); }
+        });
+        marker.on('dblclick', () => {
+          if (bridge) { bridge.openSite(id); }
+        });
+        marker.on('contextmenu', () => {
+          if (bridge) { bridge.requestRenameSite(id); }
+        });
+        marker.on('mouseover', () => { hoverTargetId = id; });
+        marker.on('mouseout', () => { if (hoverTargetId === id) { hoverTargetId = null; } });
+        marker.on('mousedown', (e) => {
+          if (!linkMode) { return; }
+          dragSourceId = id;
+          const start = marker.getLatLng();
+          dragLine = L.polyline([start, start], { color: '#6b7280', dashArray: '6 6' }).addTo(map);
+          map.dragging.disable();
+        });
+        marker.on('dragstart', (e) => {
+          const pos = e.target.getLatLng();
+          marker._prevLatLng = { lat: pos.lat, lng: pos.lng };
+        });
+        marker.on('dragend', (e) => {
+          const pos = e.target.getLatLng();
+          const prev = marker._prevLatLng || { lat: pos.lat, lng: pos.lng };
+          if (bridge) { bridge.requestMoveNode(id, pos.lat, pos.lng, prev.lat, prev.lng); }
+        });
+        markers.set(id, marker);
+      }
+
+      function moveMarker(id, lat, lon) {
+        const marker = markers.get(id);
+        if (!marker) { return; }
+        marker.setLatLng([lat, lon]);
+      }
+
+      function updateMarkerLabel(id, name, kind) {
+        const marker = markers.get(id);
+        if (!marker) { return; }
+        marker.bindPopup(`${name} (${kind})`);
+        marker.bindTooltip(name, { direction: 'top' });
+      }
+
+      function setMarkerStatus(id, status) {
+        const marker = markers.get(id);
+        if (!marker) { return; }
+        marker.setIcon(markerIcon(status));
+      }
+
+      function addCoverage(id, lat, lon, azimuth, beamwidth, rangeKm, color) {
+        const polygon = buildCoveragePolygon(lat, lon, azimuth, beamwidth, rangeKm);
+        if (!polygon) { return; }
+        polygon.setStyle({ color: color, fillColor: color });
+        polygon.addTo(coverageLayer);
+        coverages.set(id, polygon);
+      }
+
+      function updateCoverage(id, lat, lon, azimuth, beamwidth, rangeKm, color, tooltip) {
+        const polygon = coverages.get(id);
+        if (!polygon) {
+          addCoverage(id, lat, lon, azimuth, beamwidth, rangeKm, color);
+          return;
+        }
+        const latlngs = buildCoverageLatLngs(lat, lon, azimuth, beamwidth, rangeKm);
+        if (!latlngs) { return; }
+        polygon.setLatLngs(latlngs);
+        if (color) { polygon.setStyle({ color: color, fillColor: color }); }
+        if (tooltip) { polygon.bindTooltip(tooltip); }
+      }
+
+      function updateCoveragePoints(id, latlngs, color, tooltip) {
+        const polygon = coverages.get(id);
+        if (!polygon) {
+          const newPoly = L.polygon(latlngs, { color: color, fillColor: color, fillOpacity: 0.15 });
+          if (tooltip) { newPoly.bindTooltip(tooltip); }
+          newPoly.addTo(coverageLayer);
+          coverages.set(id, newPoly);
+          return;
+        }
+        polygon.setLatLngs(latlngs);
+        if (color) { polygon.setStyle({ color: color, fillColor: color }); }
+        if (tooltip) { polygon.bindTooltip(tooltip); }
+      }
+
+      function removeCoverage(id) {
+        const polygon = coverages.get(id);
+        if (!polygon) { return; }
+        coverageLayer.removeLayer(polygon);
+        coverages.delete(id);
+      }
+
+      function setCoverageVisible(enabled) {
+        if (enabled) {
+          coverageLayer.addTo(map);
+        } else {
+          map.removeLayer(coverageLayer);
+        }
+      }
+
+      function buildCoverageLatLngs(lat, lon, azimuth, beamwidth, rangeKm) {
+        if (beamwidth <= 0 || rangeKm <= 0) { return null; }
+        const points = [];
+        const center = L.latLng(lat, lon);
+        const start = azimuth - beamwidth / 2;
+        const end = azimuth + beamwidth / 2;
+        for (let angle = start; angle <= end; angle += Math.max(1, beamwidth / 24)) {
+          points.push(destinationPoint(center, angle, rangeKm));
+        }
+        points.unshift(center);
+        points.push(center);
+        return points;
+      }
+
+      function buildCoveragePolygon(lat, lon, azimuth, beamwidth, rangeKm) {
+        const latlngs = buildCoverageLatLngs(lat, lon, azimuth, beamwidth, rangeKm);
+        if (!latlngs) { return null; }
+        return L.polygon(latlngs, { color: '#22c55e', fillColor: '#22c55e', fillOpacity: 0.15 });
+      }
+
+      function destinationPoint(start, bearing, distanceKm) {
+        const R = 6371.0;
+        const brng = bearing * Math.PI / 180;
+        const d = distanceKm / R;
+        const lat1 = start.lat * Math.PI / 180;
+        const lon1 = start.lng * Math.PI / 180;
+        const lat2 = Math.asin(Math.sin(lat1) * Math.cos(d) + Math.cos(lat1) * Math.sin(d) * Math.cos(brng));
+        const lon2 = lon1 + Math.atan2(Math.sin(brng) * Math.sin(d) * Math.cos(lat1), Math.cos(d) - Math.sin(lat1) * Math.sin(lat2));
+        return L.latLng(lat2 * 180 / Math.PI, lon2 * 180 / Math.PI);
+      }
+
+      function addLink(id, label, kind, info, distanceKm, latA, lonA, latB, lonB) {
+        const color = kind === 'ptp' ? '#2563eb' : (kind === 'ptmp' ? '#10b981' : '#f97316');
+        const line = L.polyline([[latA, lonA], [latB, lonB]], { color: color, weight: 3 });
+        line.addTo(map);
+        const labelText = distanceKm ? `${label} • ${distanceKm.toFixed(2)} км` : label;
+        line.bindTooltip(labelText, { permanent: true, direction: 'center' });
+        line.on('click', () => {
+          if (bridge) { bridge.selectLink(id); }
+        });
+        line.on('contextmenu', () => {
+          if (bridge) { bridge.requestDeleteLink(id); }
+        });
+        line.on('mouseover', (e) => {
+          const entry = links.get(id);
+          if (!entry) { return; }
+          entry.timer = setTimeout(() => {
+            entry.popup = L.popup({ closeButton: false, autoClose: false })
+              .setLatLng(e.latlng)
+              .setContent(info || '');
+            entry.popup.openOn(map);
+          }, 1500);
+        });
+        line.on('mouseout', () => {
+          const entry = links.get(id);
+          if (!entry) { return; }
+          if (entry.timer) { clearTimeout(entry.timer); entry.timer = null; }
+          if (entry.popup) { map.closePopup(entry.popup); entry.popup = null; }
+        });
+        links.set(id, { line, info, timer: null, popup: null, label, distanceKm });
+      }
+
+      function updateLink(id, latA, lonA, latB, lonB) {
+        const entry = links.get(id);
+        if (!entry) { return; }
+        entry.line.setLatLngs([[latA, lonA], [latB, lonB]]);
+      }
+
+      function updateLinkMeta(id, label, kind, info, distanceKm) {
+        const entry = links.get(id);
+        if (!entry) { return; }
+        const color = kind === 'ptp' ? '#2563eb' : (kind === 'ptmp' ? '#10b981' : '#f97316');
+        entry.line.setStyle({ color: color });
+        const tooltip = entry.line.getTooltip();
+        const labelText = distanceKm ? `${label} • ${distanceKm.toFixed(2)} км` : label;
+        if (tooltip) { tooltip.setContent(labelText); }
+        entry.info = info;
+        entry.label = label;
+        entry.distanceKm = distanceKm;
+      }
+
+      function removeLink(id) {
+        const entry = links.get(id);
+        if (!entry) { return; }
+        map.removeLayer(entry.line);
+        links.delete(id);
+      }
+
+      function focusMarker(id) {
+        const marker = markers.get(id);
+        if (!marker) { return; }
+        marker.openPopup();
+        map.panTo(marker.getLatLng());
+      }
+
+      function setLinkMode(value) {
+        linkMode = !!value;
+        markers.forEach((marker) => {
+          if (linkMode) {
+            marker.dragging.disable();
+          } else {
+            marker.dragging.enable();
+          }
+        });
+      }
+
+      function setElevationVisible(enabled) {
+        if (enabled) {
+          elevationLayer.addTo(map);
+          if (bridge) { requestElevationPrefetch(); }
+        } else {
+          map.removeLayer(elevationLayer);
+        }
+      }
+
+      function requestElevationPrefetch() {
+        if (!bridge) { return; }
+        const b = map.getBounds();
+        bridge.prefetchElevation(b.getSouth(), b.getWest(), b.getNorth(), b.getEast(), map.getZoom());
+      }
+
+      map.on('moveend', () => {
+        if (map.hasLayer(elevationLayer)) {
+          requestElevationPrefetch();
+        }
+      });
+
+      map.on('mousemove', (e) => {
+        if (!dragLine) { return; }
+        const start = dragLine.getLatLngs()[0];
+        dragLine.setLatLngs([start, e.latlng]);
+        const km = start.distanceTo(e.latlng) / 1000;
+        if (!dragTooltip) {
+          dragTooltip = L.tooltip({ permanent: false, direction: 'top', opacity: 0.9 });
+        }
+        dragTooltip.setLatLng(e.latlng).setContent(`${km.toFixed(2)} км`);
+        dragTooltip.addTo(map);
+      });
+
+      map.on('mouseup', () => {
+        if (!dragLine) { return; }
+        map.removeLayer(dragLine);
+        dragLine = null;
+        if (dragTooltip) { map.removeLayer(dragTooltip); dragTooltip = null; }
+        map.dragging.enable();
+        if (dragSourceId && hoverTargetId && dragSourceId !== hoverTargetId) {
+          if (bridge) { bridge.requestSiteLink(dragSourceId, hoverTargetId); }
+        }
+        dragSourceId = null;
+      });
+
+      map.on('contextmenu', (e) => {
+        const x = e.originalEvent.clientX;
+        const y = e.originalEvent.clientY;
+        ensureBridgeReady(() => bridge.showContextMenu(e.latlng.lat, e.latlng.lng, x, y));
+      });
+      window.addMarker = addMarker;
+      window.moveMarker = moveMarker;
+      window.updateMarkerLabel = updateMarkerLabel;
+      window.setMarkerStatus = setMarkerStatus;
+      window.addLink = addLink;
+      window.updateLink = updateLink;
+      window.removeLink = removeLink;
+      window.focusMarker = focusMarker;
+      window.setLinkMode = setLinkMode;
+      window.setElevationVisible = setElevationVisible;
+      window.addCoverage = addCoverage;
+      window.updateCoverage = updateCoverage;
+      window.updateCoveragePoints = updateCoveragePoints;
+      window.removeCoverage = removeCoverage;
+      window.setCoverageVisible = setCoverageVisible;
+      window.clearAll = function () {
+        markers.forEach((m) => map.removeLayer(m));
+        markers.clear();
+        links.forEach((entry) => map.removeLayer(entry.line));
+        links.clear();
+        coverages.forEach((c) => coverageLayer.removeLayer(c));
+        coverages.clear();
+      };
+      window.requestElevationPrefetch = requestElevationPrefetch;
+
+      ensureBridgeReady(() => {});
+    </script>
+  </body>
+</html>

@@ -35,10 +35,6 @@ class SiteLinkDialog(QDialog):
         freq_validator = QDoubleValidator(0.0, 100.0, 6, self)
         freq_validator.setLocale(QLocale.c())
         self._frequency.setValidator(freq_validator)
-        self._antenna_height = QLineEdit(self)
-        height_validator = QDoubleValidator(0.0, 200.0, 2, self)
-        height_validator.setLocale(QLocale.c())
-        self._antenna_height.setValidator(height_validator)
         self._ssid = QLineEdit(self)
         self._password = QLineEdit(self)
         self._password.setEchoMode(QLineEdit.EchoMode.Normal)
@@ -61,7 +57,6 @@ class SiteLinkDialog(QDialog):
             self._cable_type.addItem(label, ctype)
 
         self._label_frequency = QLabel("Частота (ГГц)")
-        self._label_antenna = QLabel("Висота антени (м)")
         self._label_ssid = QLabel("SSID")
         self._label_password = QLabel("Пароль")
         self._label_eth_type = QLabel("Тип лінка (Ethernet)")
@@ -72,8 +67,6 @@ class SiteLinkDialog(QDialog):
         form.addWidget(self._kind)
         form.addWidget(self._label_frequency)
         form.addWidget(self._frequency)
-        form.addWidget(self._label_antenna)
-        form.addWidget(self._antenna_height)
         form.addWidget(self._label_ssid)
         form.addWidget(self._ssid)
         form.addWidget(self._label_password)
@@ -113,14 +106,6 @@ class SiteLinkDialog(QDialog):
         except ValueError:
             return None
 
-    def antenna_height(self) -> float | None:
-        value = self._antenna_height.text().strip()
-        if not value:
-            return None
-        try:
-            return float(value)
-        except ValueError:
-            return None
 
     def ssid(self) -> str | None:
         return self._ssid.text().strip() or None
@@ -137,7 +122,7 @@ class SiteLinkDialog(QDialog):
     def _toggle_fields(self) -> None:
         kind = self.link_kind()
         is_wireless = kind in (LinkKind.PTP, LinkKind.PTMP)
-        for widget in (self._label_frequency, self._frequency, self._label_antenna, self._antenna_height, self._label_ssid, self._ssid, self._label_password, self._password):
+        for widget in (self._label_frequency, self._frequency, self._label_ssid, self._ssid, self._label_password, self._password):
             widget.setVisible(is_wireless)
         for widget in (self._label_eth_type, self._link_type, self._label_cable, self._cable_type):
             widget.setVisible(not is_wireless)

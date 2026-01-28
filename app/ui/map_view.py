@@ -109,6 +109,46 @@ class MapView(QWebEngineView):
         )
         self.page().runJavaScript(js)
 
+    def add_coverage(
+        self,
+        site_id: str,
+        lat: float,
+        lon: float,
+        azimuth: float,
+        beamwidth: float,
+        range_km: float,
+        color: str,
+    ) -> None:
+        self.page().runJavaScript(
+            f"addCoverage({site_id!r}, {lat}, {lon}, {azimuth}, {beamwidth}, {range_km}, {color!r});"
+        )
+
+    def update_coverage(
+        self,
+        site_id: str,
+        lat: float,
+        lon: float,
+        azimuth: float,
+        beamwidth: float,
+        range_km: float,
+        color: str,
+        tooltip: str,
+    ) -> None:
+        self.page().runJavaScript(
+            f"updateCoverage({site_id!r}, {lat}, {lon}, {azimuth}, {beamwidth}, {range_km}, {color!r}, {tooltip!r});"
+        )
+
+    def update_coverage_points(self, site_id: str, points: list, color: str, tooltip: str) -> None:
+        self.page().runJavaScript(
+            f"updateCoveragePoints({site_id!r}, {points!r}, {color!r}, {tooltip!r});"
+        )
+
+    def remove_coverage(self, site_id: str) -> None:
+        self.page().runJavaScript(f"removeCoverage({site_id!r});")
+
+    def set_coverage_visible(self, enabled: bool) -> None:
+        self.page().runJavaScript(f"setCoverageVisible({str(enabled).lower()});")
+
     def add_link(
         self,
         link_id: str,

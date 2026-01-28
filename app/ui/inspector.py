@@ -19,6 +19,7 @@ from app.domain import CableType, Link, LinkKind, LinkType, Site, SiteKind
 class InspectorPanel(QWidget):
     link_updated = Signal(str, dict)
     link_analyze_requested = Signal(str)
+    site_updated = Signal(str, dict)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -31,11 +32,29 @@ class InspectorPanel(QWidget):
         self._site_coords = QLabel("—")
         self._site_elevation = QLabel("—")
         self._site_notes = QLabel("—")
+        self._site_antenna_type = QComboBox(self)
+        self._site_antenna_type.addItems(["omni", "sector", "directional"])
+        self._site_azimuth = QLineEdit(self)
+        self._site_beamwidth = QLineEdit(self)
+        self._site_gain = QLineEdit(self)
+        self._site_height = QLineEdit(self)
+        self._site_azimuth.setValidator(QDoubleValidator(0.0, 360.0, 1, self))
+        self._site_beamwidth.setValidator(QDoubleValidator(0.0, 360.0, 1, self))
+        self._site_gain.setValidator(QDoubleValidator(0.0, 60.0, 1, self))
+        self._site_height.setValidator(QDoubleValidator(0.0, 200.0, 2, self))
+        self._site_apply = QPushButton("Застосувати антену", self)
+        self._site_apply.clicked.connect(self._apply_site_changes)
         site_layout.addRow(QLabel("Назва:"), self._site_name)
         site_layout.addRow(QLabel("Тип:"), self._site_type)
         site_layout.addRow(QLabel("Координати:"), self._site_coords)
         site_layout.addRow(QLabel("Висота:"), self._site_elevation)
         site_layout.addRow(QLabel("Нотатки:"), self._site_notes)
+        site_layout.addRow(QLabel("Тип антени:"), self._site_antenna_type)
+        site_layout.addRow(QLabel("Азимут:"), self._site_azimuth)
+        site_layout.addRow(QLabel("Сектор (°):"), self._site_beamwidth)
+        site_layout.addRow(QLabel("Підсилення (dBi):"), self._site_gain)
+        site_layout.addRow(QLabel("Висота антени (м):"), self._site_height)
+        site_layout.addRow(self._site_apply)
 
         self._link_group = QWidget(self)
         link_layout = QFormLayout(self._link_group)
@@ -46,7 +65,6 @@ class InspectorPanel(QWidget):
         self._link_kind.addItem("Ethernet", LinkKind.ETHERNET)
         self._link_kind.currentIndexChanged.connect(self._toggle_link_fields)
         self._label_frequency = QLabel("Частота (ГГц):")
-        self._label_antenna = QLabel("Висота антени (м):")
         self._label_ssid = QLabel("SSID:")
         self._label_password = QLabel("Пароль:")
         self._label_link_type = QLabel("Тип лінка:")
@@ -58,10 +76,6 @@ class InspectorPanel(QWidget):
         freq_validator = QDoubleValidator(0.0, 100.0, 6, self)
         freq_validator.setLocale(QLocale.c())
         self._link_frequency.setValidator(freq_validator)
-        self._link_antenna = QLineEdit(self)
-        antenna_validator = QDoubleValidator(0.0, 200.0, 2, self)
-        antenna_validator.setLocale(QLocale.c())
-        self._link_antenna.setValidator(antenna_validator)
         self._link_ssid = QLineEdit(self)
         self._link_password = QLineEdit(self)
 
@@ -83,7 +97,6 @@ class InspectorPanel(QWidget):
         link_layout.addRow(QLabel("Між:"), self._link_between)
         link_layout.addRow(QLabel("Дистанція:"), self._link_distance)
         link_layout.addRow(self._label_frequency, self._link_frequency)
-        link_layout.addRow(self._label_antenna, self._link_antenna)
         link_layout.addRow(self._label_ssid, self._link_ssid)
         link_layout.addRow(self._label_password, self._link_password)
         link_layout.addRow(self._label_link_type, self._link_type)
@@ -95,6 +108,7 @@ class InspectorPanel(QWidget):
         layout.addWidget(self._site_group)
         layout.addWidget(self._link_group)
         self._link_group.setVisible(False)
+        self._current_site_id: str | None = None
 
     def show_site(self, site: Site | None) -> None:
         if site is None:
@@ -106,6 +120,7 @@ class InspectorPanel(QWidget):
             self._site_group.setVisible(True)
             self._link_group.setVisible(False)
             self._current_link_id = None
+            self._current_site_id = None
             return
 
         self._site_name.setText(site.name)
@@ -113,9 +128,19 @@ class InspectorPanel(QWidget):
         self._site_coords.setText(f"{site.location.lat:.6f}, {site.location.lon:.6f}")
         self._site_elevation.setText("—")
         self._site_notes.setText(f"пристроїв: {len(site.devices)}")
+        antenna = site.antenna
+        if antenna.antenna_type:
+            idx = self._site_antenna_type.findText(antenna.antenna_type)
+            if idx >= 0:
+                self._site_antenna_type.setCurrentIndex(idx)
+        self._site_azimuth.setText("" if antenna.azimuth_deg is None else str(antenna.azimuth_deg))
+        self._site_beamwidth.setText("" if antenna.beamwidth_deg is None else str(antenna.beamwidth_deg))
+        self._site_gain.setText("" if antenna.gain_dbi is None else str(antenna.gain_dbi))
+        self._site_height.setText("" if antenna.height_m is None else str(antenna.height_m))
         self._site_group.setVisible(True)
         self._link_group.setVisible(False)
         self._current_link_id = None
+        self._current_site_id = site.id
 
     def show_link(self, link: Link | None, site_a_name: str = "—", site_b_name: str = "—") -> None:
         if link is None:
@@ -131,12 +156,10 @@ class InspectorPanel(QWidget):
         self._set_kind_combo(kind_value)
         if kind_value in ("ptp", "ptmp"):
             self._link_frequency.setText("" if link.frequency_ghz is None else str(link.frequency_ghz))
-            self._link_antenna.setText("" if link.antenna_height_m is None else str(link.antenna_height_m))
             self._link_ssid.setText(link.ssid or "")
             self._link_password.setText(link.password or "")
         else:
             self._link_frequency.setText("")
-            self._link_antenna.setText("")
             self._link_ssid.setText("")
             self._link_password.setText("")
             if link.link_type is not None:
@@ -176,8 +199,6 @@ class InspectorPanel(QWidget):
         for widget in (
             self._label_frequency,
             self._link_frequency,
-            self._label_antenna,
-            self._link_antenna,
             self._label_ssid,
             self._link_ssid,
             self._label_password,
@@ -207,7 +228,6 @@ class InspectorPanel(QWidget):
             "name": self._link_name.text().strip() or "Лінк",
             "kind": kind,
             "frequency_ghz": float(self._link_frequency.text()) if is_wireless and self._link_frequency.text().strip() else None,
-            "antenna_height_m": float(self._link_antenna.text()) if is_wireless and self._link_antenna.text().strip() else None,
             "ssid": self._link_ssid.text().strip() if is_wireless else None,
             "password": self._link_password.text().strip() if is_wireless else None,
             "link_type": None if is_wireless else self._link_type.currentData(),
@@ -219,3 +239,15 @@ class InspectorPanel(QWidget):
         if self._current_link_id is None:
             return
         self.link_analyze_requested.emit(self._current_link_id)
+
+    def _apply_site_changes(self) -> None:
+        if self._current_site_id is None:
+            return
+        payload = {
+            "antenna_type": self._site_antenna_type.currentText(),
+            "azimuth_deg": float(self._site_azimuth.text()) if self._site_azimuth.text().strip() else None,
+            "beamwidth_deg": float(self._site_beamwidth.text()) if self._site_beamwidth.text().strip() else None,
+            "gain_dbi": float(self._site_gain.text()) if self._site_gain.text().strip() else None,
+            "height_m": float(self._site_height.text()) if self._site_height.text().strip() else None,
+        }
+        self.site_updated.emit(self._current_site_id, payload)

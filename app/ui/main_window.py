@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from math import asin, cos, radians, sin, sqrt
+from math import asin, atan2, cos, radians, sin, sqrt
 from uuid import uuid4
 
 from PySide6.QtCore import QPoint, Qt, QTimer
@@ -43,6 +43,7 @@ class MainWindow(QMainWindow):
         self.inspector = InspectorPanel(self)
         self.inspector.link_updated.connect(self._on_inspector_link_updated)
         self.inspector.link_analyze_requested.connect(self._on_link_analyze_requested)
+        self.inspector.site_updated.connect(self._on_site_updated)
         self._elevation = ElevationProvider()
         self._link_analyzer = LinkAnalyzer(self._elevation)
         self._prefetch_timer = QTimer(self)
@@ -79,6 +80,10 @@ class MainWindow(QMainWindow):
         self._elevation_action = toolbar.addAction("Шар висот")
         self._elevation_action.setCheckable(True)
         self._elevation_action.toggled.connect(self._toggle_elevation_layer)
+        self._coverage_action = toolbar.addAction("Покриття")
+        self._coverage_action.setCheckable(True)
+        self._coverage_action.setChecked(True)
+        self._coverage_action.toggled.connect(self._toggle_coverage_layer)
 
     def _confirm_action(self, title: str, message: str) -> bool:
         return (
@@ -100,6 +105,9 @@ class MainWindow(QMainWindow):
         self.map_view.set_elevation_layer(enabled)
         if enabled:
             self._schedule_elevation_prefetch()
+
+    def _toggle_coverage_layer(self, enabled: bool) -> None:
+        self.map_view.set_coverage_visible(enabled)
 
     def _on_map_context_menu(self, lat: float, lon: float, x: int, y: int) -> None:
         menu = QMenu(self)
@@ -138,9 +146,15 @@ class MainWindow(QMainWindow):
             kind=kind,
             location=GeoPoint(lat=lat, lon=lon),
         )
+        if site.antenna.antenna_type is None:
+            site.antenna.antenna_type = "sector"
+            site.antenna.azimuth_deg = 0.0
+            site.antenna.beamwidth_deg = 120.0
+            site.antenna.gain_dbi = 12.0
         self._project.add_site(site)
         self.project_tree.add_node(site.id, f"{site.name} ({site.kind.value})")
         self.map_view.add_marker(site.id, site.name, self._site_kind_label(site.kind.value), lat, lon)
+        self._update_site_coverage(site)
         self.inspector.show_site(site)
 
     def _on_map_request_move_node(
@@ -169,7 +183,7 @@ class MainWindow(QMainWindow):
                         link.id,
                         self._link_label(link.kind),
                         self._link_kind_value(link.kind),
-                        self._link_info(link),
+                        self._link_info(link, a),
                         link.distance_km,
                     )
                     self.map_view.update_link(
@@ -179,6 +193,7 @@ class MainWindow(QMainWindow):
                         b.location.lat,
                         b.location.lon,
                     )
+        self._update_site_coverage(site)
         if self.project_tree.currentItem() is not None:
             current_id = self.project_tree.currentItem().data(0, Qt.ItemDataRole.UserRole)
             if current_id == site_id:
@@ -230,6 +245,7 @@ class MainWindow(QMainWindow):
             elevation = self._elevation.get_elevation(site.location.lat, site.location.lon)
             self.inspector.set_site_elevation(elevation, self._elevation.available)
             self.map_view.focus_marker(site.id)
+            self._update_site_coverage(site)
 
     def _schedule_elevation_prefetch(self) -> None:
         self._prefetch_timer.start(400)
@@ -265,7 +281,6 @@ class MainWindow(QMainWindow):
             kind=kind,
             site_a_id=site_a.id,
             site_b_id=site_b.id,
-            antenna_height_m=dialog.antenna_height() if is_wireless else None,
             frequency_ghz=dialog.frequency_ghz() if is_wireless else None,
             ssid=dialog.ssid() if is_wireless else None,
             password=dialog.password() if is_wireless else None,
@@ -279,7 +294,7 @@ class MainWindow(QMainWindow):
             link.id,
             dialog.link_label(),
             self._link_kind_value(link.kind),
-            self._link_info(link),
+            self._link_info(link, site_a),
             link.distance_km,
             site_a.location.lat,
             site_a.location.lon,
@@ -308,7 +323,6 @@ class MainWindow(QMainWindow):
         link.name = data["name"]
         link.kind = data["kind"]
         link.frequency_ghz = data["frequency_ghz"]
-        link.antenna_height_m = data.get("antenna_height_m")
         link.ssid = data["ssid"]
         link.password = data["password"]
         link.link_type = data["link_type"]
@@ -323,7 +337,7 @@ class MainWindow(QMainWindow):
                 link.id,
                 self._link_label(link.kind),
                 self._link_kind_value(link.kind),
-                self._link_info(link),
+                self._link_info(link, site_a),
                 link.distance_km,
             )
             self.map_view.update_link(
@@ -336,6 +350,29 @@ class MainWindow(QMainWindow):
         self.project_tree.set_project(self._project)
         self.inspector.show_link(link, site_a.name if site_a else "—", site_b.name if site_b else "—")
 
+    def _on_site_updated(self, site_id: str, data: dict) -> None:
+        site = self._project.sites.get(site_id)
+        if site is None:
+            return
+        site.antenna.antenna_type = data.get("antenna_type")
+        site.antenna.azimuth_deg = data.get("azimuth_deg")
+        site.antenna.beamwidth_deg = data.get("beamwidth_deg")
+        site.antenna.gain_dbi = data.get("gain_dbi")
+        site.antenna.height_m = data.get("height_m")
+        self._update_site_coverage(site)
+        for link in self._project.links.values():
+            if link.site_a_id == site.id or link.site_b_id == site.id:
+                site_a = self._project.sites.get(link.site_a_id)
+                site_b = self._project.sites.get(link.site_b_id)
+                if site_a and site_b:
+                    self.map_view.update_link_meta(
+                        link.id,
+                        self._link_label(link.kind),
+                        self._link_kind_value(link.kind),
+                        self._link_info(link, site_a),
+                        link.distance_km,
+                    )
+
     def _on_link_analyze_requested(self, link_id: str) -> None:
         link = self._project.links.get(link_id)
         if link is None:
@@ -344,9 +381,7 @@ class MainWindow(QMainWindow):
         site_b = self._project.sites.get(link.site_b_id)
         if site_a is None or site_b is None:
             return
-        profile = self._link_analyzer.analyze(
-            site_a, site_b, samples=30, antenna_height_m=link.antenna_height_m or 0.0
-        )
+        profile = self._link_analyzer.analyze(site_a, site_b, samples=30)
         dialog = LinkProfileDialog(profile, self)
         dialog.exec()
 
@@ -368,24 +403,25 @@ class MainWindow(QMainWindow):
         return {"ptp": "PtP", "ptmp": "PtMP", "ethernet": "Ethernet"}.get(value, value)
 
     @staticmethod
-    def _link_info(link: Link) -> str:
+    def _link_info(link: Link, site_a: Site | None = None) -> str:
         kind_value = link.kind.value if hasattr(link.kind, "value") else str(link.kind)
         distance_text = f"{link.distance_km:.2f} км" if link.distance_km is not None else "-"
+        antenna_height = site_a.antenna.height_m if site_a and site_a.antenna else None
         if kind_value in ("ptp", "ptmp"):
             return (
                 f"Тип: {kind_value}\\n"
                 f"Частота: {link.frequency_ghz or '-'} ГГц\\n"
-                f"Висота антени: {link.antenna_height_m or '-'} м\\n"
+                f"Висота антени: {antenna_height or '-'} м\\n"
                 f"SSID: {link.ssid or '-'}\\n"
                 f"Пароль: {link.password or '-'}\\n"
                 f"Дистанція: {distance_text}"
             )
         return (
-            "Тип: Ethernet\\n"
+            "Тип: Ethernet | "
             f"Лінк: {link.link_type.value if hasattr(link.link_type, 'value') else (link.link_type or '-')}"
-            "\\n"
+            " | "
             f"Кабель: {link.cable_type.value if hasattr(link.cable_type, 'value') else (link.cable_type or '-')}"
-            "\\n"
+            " | "
             f"Дистанція: {distance_text}"
         )
 
@@ -398,5 +434,87 @@ class MainWindow(QMainWindow):
         c = 2 * asin(sqrt(a))
         return r * c
 
+    def _update_site_coverage(self, site: Site) -> None:
+        antenna = site.antenna
+        if antenna is None or antenna.beamwidth_deg is None or antenna.gain_dbi is None:
+            self.map_view.remove_coverage(site.id)
+            return
+        beamwidth = antenna.beamwidth_deg
+        azimuth = antenna.azimuth_deg or 0.0
+        if antenna.antenna_type == "omni":
+            beamwidth = 360.0
+        range_km = max(0.2, (antenna.gain_dbi or 0) * 0.2)
+        color = self._coverage_color(antenna.antenna_type)
+        tooltip = (
+            f"{site.name} | Азимут: {azimuth}° | Сектор: {beamwidth}° | "
+            f"Gain: {antenna.gain_dbi or '-'} dBi"
+        )
+        points = self._coverage_points_with_dem(site, azimuth, beamwidth, range_km)
+        if points:
+            self.map_view.update_coverage_points(site.id, points, color, tooltip)
+        else:
+            self.map_view.update_coverage(
+                site.id,
+                site.location.lat,
+                site.location.lon,
+                azimuth,
+                beamwidth,
+                range_km,
+                color,
+                tooltip,
+            )
+
     def _cleanup_on_close(self) -> None:
         self._elevation.clear_cache()
+
+    @staticmethod
+    def _coverage_color(antenna_type: str | None) -> str:
+        return {
+            "omni": "#22c55e",
+            "sector": "#0ea5e9",
+            "directional": "#f97316",
+        }.get(antenna_type or "", "#22c55e")
+
+    def _coverage_points_with_dem(
+        self, site: Site, azimuth: float, beamwidth: float, range_km: float
+    ) -> list | None:
+        if not self._elevation.available:
+            return None
+        elevation = self._elevation.get_elevation(site.location.lat, site.location.lon)
+        if elevation is None:
+            return None
+        base_height = elevation + (site.antenna.height_m or 0)
+        step_km = max(0.2, range_km / 12)
+        points = [[site.location.lat, site.location.lon]]
+        start = azimuth - beamwidth / 2
+        end = azimuth + beamwidth / 2
+        for angle in range(int(start), int(end) + 1, max(1, int(beamwidth / 20))):
+            last_lat = site.location.lat
+            last_lon = site.location.lon
+            for dist in self._frange(step_km, range_km, step_km):
+                lat, lon = self._destination_point(site.location.lat, site.location.lon, angle, dist)
+                elev = self._elevation.get_elevation(lat, lon)
+                if elev is not None and elev > base_height:
+                    break
+                last_lat, last_lon = lat, lon
+            points.append([last_lat, last_lon])
+        points.append([site.location.lat, site.location.lon])
+        return points
+
+    @staticmethod
+    def _destination_point(lat: float, lon: float, bearing: float, distance_km: float) -> tuple[float, float]:
+        r = 6371.0
+        brng = radians(bearing)
+        d = distance_km / r
+        lat1 = radians(lat)
+        lon1 = radians(lon)
+        lat2 = asin(sin(lat1) * cos(d) + cos(lat1) * sin(d) * cos(brng))
+        lon2 = lon1 + atan2(sin(brng) * sin(d) * cos(lat1), cos(d) - sin(lat1) * sin(lat2))
+        return (lat2 * 180 / 3.141592653589793, lon2 * 180 / 3.141592653589793)
+
+    @staticmethod
+    def _frange(start: float, stop: float, step: float):
+        value = start
+        while value <= stop:
+            yield value
+            value += step

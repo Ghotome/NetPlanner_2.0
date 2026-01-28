@@ -37,6 +37,8 @@
 
       const markers = new Map();
       const links = new Map();
+      const coverages = new Map();
+      const coverageLayer = L.layerGroup().addTo(map);
       let bridge = null;
       let linkMode = false;
       let dragLine = null;
@@ -87,6 +89,87 @@
         const marker = markers.get(id);
         if (!marker) { return; }
         marker.setLatLng([lat, lon]);
+      }
+
+      function addCoverage(id, lat, lon, azimuth, beamwidth, rangeKm, color) {
+        const polygon = buildCoveragePolygon(lat, lon, azimuth, beamwidth, rangeKm);
+        if (!polygon) { return; }
+        polygon.setStyle({ color: color, fillColor: color });
+        polygon.addTo(coverageLayer);
+        coverages.set(id, polygon);
+      }
+
+      function updateCoverage(id, lat, lon, azimuth, beamwidth, rangeKm, color, tooltip) {
+        const polygon = coverages.get(id);
+        if (!polygon) {
+          addCoverage(id, lat, lon, azimuth, beamwidth, rangeKm, color);
+          return;
+        }
+        const latlngs = buildCoverageLatLngs(lat, lon, azimuth, beamwidth, rangeKm);
+        if (!latlngs) { return; }
+        polygon.setLatLngs(latlngs);
+        if (color) { polygon.setStyle({ color: color, fillColor: color }); }
+        if (tooltip) { polygon.bindTooltip(tooltip); }
+      }
+
+      function updateCoveragePoints(id, latlngs, color, tooltip) {
+        const polygon = coverages.get(id);
+        if (!polygon) {
+          const newPoly = L.polygon(latlngs, { color: color, fillColor: color, fillOpacity: 0.15 });
+          if (tooltip) { newPoly.bindTooltip(tooltip); }
+          newPoly.addTo(coverageLayer);
+          coverages.set(id, newPoly);
+          return;
+        }
+        polygon.setLatLngs(latlngs);
+        if (color) { polygon.setStyle({ color: color, fillColor: color }); }
+        if (tooltip) { polygon.bindTooltip(tooltip); }
+      }
+
+      function removeCoverage(id) {
+        const polygon = coverages.get(id);
+        if (!polygon) { return; }
+        coverageLayer.removeLayer(polygon);
+        coverages.delete(id);
+      }
+
+      function setCoverageVisible(enabled) {
+        if (enabled) {
+          coverageLayer.addTo(map);
+        } else {
+          map.removeLayer(coverageLayer);
+        }
+      }
+
+      function buildCoverageLatLngs(lat, lon, azimuth, beamwidth, rangeKm) {
+        if (beamwidth <= 0 || rangeKm <= 0) { return null; }
+        const points = [];
+        const center = L.latLng(lat, lon);
+        const start = azimuth - beamwidth / 2;
+        const end = azimuth + beamwidth / 2;
+        for (let angle = start; angle <= end; angle += Math.max(1, beamwidth / 24)) {
+          points.push(destinationPoint(center, angle, rangeKm));
+        }
+        points.unshift(center);
+        points.push(center);
+        return points;
+      }
+
+      function buildCoveragePolygon(lat, lon, azimuth, beamwidth, rangeKm) {
+        const latlngs = buildCoverageLatLngs(lat, lon, azimuth, beamwidth, rangeKm);
+        if (!latlngs) { return null; }
+        return L.polygon(latlngs, { color: '#22c55e', fillColor: '#22c55e', fillOpacity: 0.15 });
+      }
+
+      function destinationPoint(start, bearing, distanceKm) {
+        const R = 6371.0;
+        const brng = bearing * Math.PI / 180;
+        const d = distanceKm / R;
+        const lat1 = start.lat * Math.PI / 180;
+        const lon1 = start.lng * Math.PI / 180;
+        const lat2 = Math.asin(Math.sin(lat1) * Math.cos(d) + Math.cos(lat1) * Math.sin(d) * Math.cos(brng));
+        const lon2 = lon1 + Math.atan2(Math.sin(brng) * Math.sin(d) * Math.cos(lat1), Math.cos(d) - Math.sin(lat1) * Math.sin(lat2));
+        return L.latLng(lat2 * 180 / Math.PI, lon2 * 180 / Math.PI);
       }
 
       function addLink(id, label, kind, info, distanceKm, latA, lonA, latB, lonB) {
@@ -222,6 +305,11 @@
       window.focusMarker = focusMarker;
       window.setLinkMode = setLinkMode;
       window.setElevationVisible = setElevationVisible;
+      window.addCoverage = addCoverage;
+      window.updateCoverage = updateCoverage;
+      window.updateCoveragePoints = updateCoveragePoints;
+      window.removeCoverage = removeCoverage;
+      window.setCoverageVisible = setCoverageVisible;
       window.requestElevationPrefetch = requestElevationPrefetch;
 
       ensureBridgeReady(() => {});

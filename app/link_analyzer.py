@@ -21,9 +21,7 @@ class LinkAnalyzer:
     def __init__(self, elevation: ElevationProvider) -> None:
         self._elevation = elevation
 
-    def analyze(
-        self, site_a: Site, site_b: Site, samples: int = 30, antenna_height_m: float = 0.0
-    ) -> LinkProfile:
+    def analyze(self, site_a: Site, site_b: Site, samples: int = 30) -> LinkProfile:
         lat1, lon1 = site_a.location.lat, site_a.location.lon
         lat2, lon2 = site_b.location.lat, site_b.location.lon
 
@@ -39,8 +37,8 @@ class LinkAnalyzer:
             elevations.append(elev if elev is not None else 0.0)
             distances.append(total_km * t)
 
-        start = elevations[0] + antenna_height_m
-        end = elevations[-1] + antenna_height_m
+        start = elevations[0] + (site_a.antenna.height_m or 0.0)
+        end = elevations[-1] + (site_b.antenna.height_m or 0.0)
         blocked = False
         max_obstruction = 0.0
         for i in range(1, len(elevations) - 1):

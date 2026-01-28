@@ -28,10 +28,12 @@ class InspectorPanel(QWidget):
         self._site_name = QLabel("—")
         self._site_type = QLabel("—")
         self._site_coords = QLabel("—")
+        self._site_elevation = QLabel("—")
         self._site_notes = QLabel("—")
         site_layout.addRow(QLabel("Назва:"), self._site_name)
         site_layout.addRow(QLabel("Тип:"), self._site_type)
         site_layout.addRow(QLabel("Координати:"), self._site_coords)
+        site_layout.addRow(QLabel("Висота:"), self._site_elevation)
         site_layout.addRow(QLabel("Нотатки:"), self._site_notes)
 
         self._link_group = QWidget(self)
@@ -89,6 +91,7 @@ class InspectorPanel(QWidget):
             self._site_name.setText("—")
             self._site_type.setText("—")
             self._site_coords.setText("—")
+            self._site_elevation.setText("—")
             self._site_notes.setText("—")
             self._site_group.setVisible(True)
             self._link_group.setVisible(False)
@@ -98,6 +101,7 @@ class InspectorPanel(QWidget):
         self._site_name.setText(site.name)
         self._site_type.setText(self._site_kind_label(site.kind.value))
         self._site_coords.setText(f"{site.location.lat:.6f}, {site.location.lon:.6f}")
+        self._site_elevation.setText("—")
         self._site_notes.setText(f"пристроїв: {len(site.devices)}")
         self._site_group.setVisible(True)
         self._link_group.setVisible(False)
@@ -130,6 +134,12 @@ class InspectorPanel(QWidget):
         self._toggle_link_fields()
         self._site_group.setVisible(False)
         self._link_group.setVisible(True)
+
+    def set_site_elevation(self, elevation_m: float | None, available: bool = True) -> None:
+        if elevation_m is None:
+            self._site_elevation.setText("—" if available else "немає даних (Pillow?)")
+        else:
+            self._site_elevation.setText(f"{elevation_m:.1f} м")
 
     @staticmethod
     def _site_kind_label(kind_value: str) -> str:

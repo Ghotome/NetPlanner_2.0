@@ -17,6 +17,7 @@ class MapBridge(QObject):
         on_request_site_link: Callable[[str, str], None],
         on_request_delete_link: Callable[[str], None],
         on_select_link: Callable[[str], None],
+        on_prefetch_elevation: Callable[[float, float, float, float, int], None],
         on_select_node: Callable[[str], None],
     ) -> None:
         super().__init__()
@@ -25,6 +26,7 @@ class MapBridge(QObject):
         self._on_request_site_link = on_request_site_link
         self._on_request_delete_link = on_request_delete_link
         self._on_select_link = on_select_link
+        self._on_prefetch_elevation = on_prefetch_elevation
         self._on_select_node = on_select_node
 
     @Slot(float, float, int, int)
@@ -45,6 +47,12 @@ class MapBridge(QObject):
     def selectLink(self, link_id: str) -> None:
         self._on_select_link(link_id)
 
+    @Slot(float, float, float, float, int)
+    def prefetchElevation(
+        self, south: float, west: float, north: float, east: float, zoom: int
+    ) -> None:
+        self._on_prefetch_elevation(south, west, north, east, zoom)
+
     @Slot(str, str)
     def requestSiteLink(self, site_a_id: str, site_b_id: str) -> None:
         self._on_request_site_link(site_a_id, site_b_id)
@@ -62,6 +70,7 @@ class MapView(QWebEngineView):
         on_request_site_link: Callable[[str, str], None],
         on_request_delete_link: Callable[[str], None],
         on_select_link: Callable[[str], None],
+        on_prefetch_elevation: Callable[[float, float, float, float, int], None],
         on_select_node: Callable[[str], None],
         parent=None,
     ) -> None:
@@ -72,6 +81,7 @@ class MapView(QWebEngineView):
             on_request_site_link,
             on_request_delete_link,
             on_select_link,
+            on_prefetch_elevation,
             on_select_node,
         )
         self._channel = QWebChannel(self)
@@ -84,6 +94,12 @@ class MapView(QWebEngineView):
         map_path = Path(__file__).resolve().parents[1] / "web" / "map.html"
         self.setUrl(QUrl.fromLocalFile(map_path.as_posix()))
         self.loadFinished.connect(self._on_load_finished)
+
+    def request_viewport(self, callback) -> None:
+        self.page().runJavaScript(
+            "(() => { const b = map.getBounds(); return [b.getSouth(), b.getWest(), b.getNorth(), b.getEast(), map.getZoom()]; })();",
+            callback,
+        )
 
     def add_marker(self, node_id: str, name: str, kind: str, lat: float, lon: float) -> None:
         js = (
@@ -129,6 +145,9 @@ class MapView(QWebEngineView):
         self.page().runJavaScript(
             f"updateLinkMeta({link_id!r}, {label!r}, {kind!r}, {info!r}, {distance_js});"
         )
+
+    def set_elevation_layer(self, enabled: bool) -> None:
+        self.page().runJavaScript(f"setElevationVisible({str(enabled).lower()});")
 
     def move_marker(self, node_id: str, lat: float, lon: float) -> None:
         self.page().runJavaScript(f"moveMarker({node_id!r}, {lat}, {lon});")

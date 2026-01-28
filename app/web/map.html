@@ -13,6 +13,27 @@
     <style>
       html, body, #map { height: 100%; margin: 0; }
       .leaflet-container { background: #0f1720; }
+      .elevation-tiles { filter: saturate(160%) contrast(140%); }
+      .elevation-legend {
+        background: rgba(15, 23, 32, 0.85);
+        color: #fff;
+        padding: 8px 10px;
+        border-radius: 6px;
+        font: 12px/1.2 sans-serif;
+      }
+      .legend-title { font-weight: 600; margin-bottom: 6px; }
+      .legend-bar {
+        width: 180px;
+        height: 8px;
+        background: linear-gradient(90deg, #c0392b 0%, #e67e22 35%, #f1c40f 60%, #27ae60 100%);
+        border-radius: 4px;
+        margin-bottom: 4px;
+      }
+      .legend-labels {
+        display: flex;
+        justify-content: space-between;
+        font-size: 10px;
+      }
     </style>
   </head>
   <body>
@@ -28,6 +49,10 @@
         maxZoom: 19,
         attribution: '&copy; OpenStreetMap contributors'
       }).addTo(map);
+      const elevationLayer = L.tileLayer(
+        'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png',
+        { maxZoom: 15, opacity: 0.65, className: 'elevation-tiles' }
+      );
 
       const markers = new Map();
       const links = new Map();
@@ -158,6 +183,27 @@
         });
       }
 
+      function setElevationVisible(enabled) {
+        if (enabled) {
+          elevationLayer.addTo(map);
+          if (bridge) { requestElevationPrefetch(); }
+        } else {
+          map.removeLayer(elevationLayer);
+        }
+      }
+
+      function requestElevationPrefetch() {
+        if (!bridge) { return; }
+        const b = map.getBounds();
+        bridge.prefetchElevation(b.getSouth(), b.getWest(), b.getNorth(), b.getEast(), map.getZoom());
+      }
+
+      map.on('moveend', () => {
+        if (map.hasLayer(elevationLayer)) {
+          requestElevationPrefetch();
+        }
+      });
+
       map.on('mousemove', (e) => {
         if (!dragLine) { return; }
         const start = dragLine.getLatLngs()[0];
@@ -194,6 +240,8 @@
       window.removeLink = removeLink;
       window.focusMarker = focusMarker;
       window.setLinkMode = setLinkMode;
+      window.setElevationVisible = setElevationVisible;
+      window.requestElevationPrefetch = requestElevationPrefetch;
 
       ensureBridgeReady(() => {});
     </script>

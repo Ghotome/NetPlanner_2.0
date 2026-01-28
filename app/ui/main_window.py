@@ -3,10 +3,11 @@ from __future__ import annotations
 from math import asin, cos, radians, sin, sqrt
 from uuid import uuid4
 
-from PySide6.QtCore import QPoint, Qt
+from PySide6.QtCore import QPoint, Qt, QTimer
 from PySide6.QtWidgets import QMainWindow, QMenu, QMessageBox, QSplitter, QWidget
 
 from app.domain import GeoPoint, Link, LinkKind, NetworkProject, Site, SiteKind
+from app.elevation import ElevationProvider
 from app.ui.inspector import InspectorPanel
 from app.ui.link_dialog import SiteLinkDialog
 from app.ui.map_view import MapView
@@ -32,12 +33,19 @@ class MainWindow(QMainWindow):
             on_request_site_link=self._on_map_request_site_link,
             on_request_delete_link=self._on_map_request_delete_link,
             on_select_link=self._on_map_select_link,
+            on_prefetch_elevation=self._on_prefetch_elevation,
             on_select_node=self._on_map_select_node,
             parent=self,
         )
 
         self.inspector = InspectorPanel(self)
         self.inspector.link_updated.connect(self._on_inspector_link_updated)
+        self._elevation = ElevationProvider()
+        self._prefetch_timer = QTimer(self)
+        self._prefetch_timer.setSingleShot(True)
+        self._prefetch_timer.timeout.connect(self._prefetch_elevation_for_view)
+        self._pending_bounds = None
+        self._pending_zoom = None
 
         splitter = QSplitter(self)
         splitter.addWidget(self.project_tree)
@@ -59,6 +67,9 @@ class MainWindow(QMainWindow):
         self._add_link_action = toolbar.addAction("Додати лінк")
         self._add_link_action.setCheckable(True)
         self._add_link_action.toggled.connect(self._toggle_link_mode)
+        self._elevation_action = toolbar.addAction("Шар висот")
+        self._elevation_action.setCheckable(True)
+        self._elevation_action.toggled.connect(self._toggle_elevation_layer)
 
     def _confirm_action(self, title: str, message: str) -> bool:
         return (
@@ -75,6 +86,11 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Перетягніть лінію між сайтами")
         else:
             self.statusBar().clearMessage()
+
+    def _toggle_elevation_layer(self, enabled: bool) -> None:
+        self.map_view.set_elevation_layer(enabled)
+        if enabled:
+            self._schedule_elevation_prefetch()
 
     def _on_map_context_menu(self, lat: float, lon: float, x: int, y: int) -> None:
         menu = QMenu(self)
@@ -166,6 +182,8 @@ class MainWindow(QMainWindow):
         self.map_view.focus_marker(site_id)
         if site is None:
             return
+        elevation = self._elevation.get_elevation(site.location.lat, site.location.lon)
+        self.inspector.set_site_elevation(elevation, self._elevation.available)
         dialog = SiteDevicesDialog(site, self)
         dialog.exec()
 
@@ -200,7 +218,24 @@ class MainWindow(QMainWindow):
         site = self._project.sites.get(site_id)
         self.inspector.show_site(site)
         if site is not None:
+            elevation = self._elevation.get_elevation(site.location.lat, site.location.lon)
+            self.inspector.set_site_elevation(elevation, self._elevation.available)
             self.map_view.focus_marker(site.id)
+
+    def _schedule_elevation_prefetch(self) -> None:
+        self._prefetch_timer.start(400)
+
+    def _prefetch_elevation_for_view(self) -> None:
+        if self._pending_bounds is None or self._pending_zoom is None:
+            return
+        self._elevation.prefetch_tiles(self._pending_bounds, self._pending_zoom)
+
+    def _on_prefetch_elevation(
+        self, south: float, west: float, north: float, east: float, zoom: int
+    ) -> None:
+        self._pending_bounds = (south, west, north, east)
+        self._pending_zoom = int(zoom)
+        self._schedule_elevation_prefetch()
 
 
     def _on_map_request_site_link(self, site_a_id: str, site_b_id: str) -> None:

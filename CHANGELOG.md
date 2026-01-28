@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.0] - 2026-01-27
+### Added
+- Site-to-site links with link type selection on map
+- Drag-linking between device ports inside a site
+- Ukrainian UI labels for new controls
+
 ## [0.3.0] - 2026-01-27
 ### Added
 - Embedded Leaflet map via Qt WebEngine

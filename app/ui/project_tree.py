@@ -10,8 +10,8 @@ class ProjectTree(QTreeWidget):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setHeaderLabel("Проєкт")
-        self._nodes_item = QTreeWidgetItem(["Зони"])
-        self._links_item = QTreeWidgetItem(["Зв'язки"])
+        self._nodes_item = QTreeWidgetItem(["Сайти"])
+        self._links_item = QTreeWidgetItem(["Лінки"])
         self._node_items = {}
         self._link_items = {}
         self.addTopLevelItem(self._nodes_item)
@@ -36,7 +36,8 @@ class ProjectTree(QTreeWidget):
                 item.addChild(child)
 
         for link in project.links.values():
-            item = QTreeWidgetItem([f"{link.name} ({link.kind.value})"])
+            kind_value = link.kind.value if hasattr(link.kind, "value") else str(link.kind)
+            item = QTreeWidgetItem([f"{link.name} ({self._link_label(kind_value)})"])
             item.setData(0, Qt.ItemDataRole.UserRole, link.id)
             self._links_item.addChild(item)
             self._link_items[link.id] = item
@@ -55,3 +56,17 @@ class ProjectTree(QTreeWidget):
         if item is None:
             return
         self.setCurrentItem(item)
+
+    def select_link(self, link_id: str) -> None:
+        item = self._link_items.get(link_id)
+        if item is None:
+            return
+        self.setCurrentItem(item)
+
+    @staticmethod
+    def _link_label(kind_value: str) -> str:
+        return {
+            "ptp": "PtP",
+            "ptmp": "PtMP",
+            "ethernet": "Ethernet",
+        }.get(kind_value, kind_value)

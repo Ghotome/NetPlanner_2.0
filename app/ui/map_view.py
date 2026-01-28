@@ -14,11 +14,17 @@ class MapBridge(QObject):
         self,
         on_show_context_menu: Callable[[float, float, int, int], None],
         on_request_move_node: Callable[[str, float, float, float, float], None],
+        on_request_site_link: Callable[[str, str], None],
+        on_request_delete_link: Callable[[str], None],
+        on_select_link: Callable[[str], None],
         on_select_node: Callable[[str], None],
     ) -> None:
         super().__init__()
         self._on_show_context_menu = on_show_context_menu
         self._on_request_move_node = on_request_move_node
+        self._on_request_site_link = on_request_site_link
+        self._on_request_delete_link = on_request_delete_link
+        self._on_select_link = on_select_link
         self._on_select_node = on_select_node
 
     @Slot(float, float, int, int)
@@ -35,17 +41,39 @@ class MapBridge(QObject):
     def selectNode(self, node_id: str) -> None:
         self._on_select_node(node_id)
 
+    @Slot(str)
+    def selectLink(self, link_id: str) -> None:
+        self._on_select_link(link_id)
+
+    @Slot(str, str)
+    def requestSiteLink(self, site_a_id: str, site_b_id: str) -> None:
+        self._on_request_site_link(site_a_id, site_b_id)
+
+    @Slot(str)
+    def requestDeleteLink(self, link_id: str) -> None:
+        self._on_request_delete_link(link_id)
+
 
 class MapView(QWebEngineView):
     def __init__(
         self,
         on_show_context_menu: Callable[[float, float, int, int], None],
         on_request_move_node: Callable[[str, float, float, float, float], None],
+        on_request_site_link: Callable[[str, str], None],
+        on_request_delete_link: Callable[[str], None],
+        on_select_link: Callable[[str], None],
         on_select_node: Callable[[str], None],
         parent=None,
     ) -> None:
         super().__init__(parent)
-        self._bridge = MapBridge(on_show_context_menu, on_request_move_node, on_select_node)
+        self._bridge = MapBridge(
+            on_show_context_menu,
+            on_request_move_node,
+            on_request_site_link,
+            on_request_delete_link,
+            on_select_link,
+            on_select_node,
+        )
         self._channel = QWebChannel(self)
         self._channel.registerObject("bridge", self._bridge)
         self.page().setWebChannel(self._channel)
@@ -64,6 +92,43 @@ class MapView(QWebEngineView):
             ");"
         )
         self.page().runJavaScript(js)
+
+    def add_link(
+        self,
+        link_id: str,
+        label: str,
+        kind: str,
+        info: str,
+        distance_km: float | None,
+        lat_a: float,
+        lon_a: float,
+        lat_b: float,
+        lon_b: float,
+    ) -> None:
+        distance_js = "null" if distance_km is None else str(distance_km)
+        js = (
+            "addLink("
+            f"{link_id!r}, {label!r}, {kind!r}, {info!r}, {distance_js}, {lat_a}, {lon_a}, {lat_b}, {lon_b}"
+            ");"
+        )
+        self.page().runJavaScript(js)
+
+    def update_link(self, link_id: str, lat_a: float, lon_a: float, lat_b: float, lon_b: float) -> None:
+        self.page().runJavaScript(f"updateLink({link_id!r}, {lat_a}, {lon_a}, {lat_b}, {lon_b});")
+
+    def remove_link(self, link_id: str) -> None:
+        self.page().runJavaScript(f"removeLink({link_id!r});")
+
+    def set_link_mode(self, enabled: bool) -> None:
+        self.page().runJavaScript(f"setLinkMode({str(enabled).lower()});")
+
+    def update_link_meta(
+        self, link_id: str, label: str, kind: str, info: str, distance_km: float | None
+    ) -> None:
+        distance_js = "null" if distance_km is None else str(distance_km)
+        self.page().runJavaScript(
+            f"updateLinkMeta({link_id!r}, {label!r}, {kind!r}, {info!r}, {distance_js});"
+        )
 
     def move_marker(self, node_id: str, lat: float, lon: float) -> None:
         self.page().runJavaScript(f"moveMarker({node_id!r}, {lat}, {lon});")

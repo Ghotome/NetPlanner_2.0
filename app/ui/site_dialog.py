@@ -174,7 +174,7 @@ class SiteDevicesDialog(QDialog):
     def __init__(self, site: Site, parent=None) -> None:
         super().__init__(parent)
         self._site = site
-        self.setWindowTitle(f"Пристрої в зоні: {site.name}")
+        self.setWindowTitle(f"Пристрої сайту: {site.name}")
         self.setStyleSheet("background:#e5e7eb;")
         self.resize(900, 600)
 
@@ -190,7 +190,7 @@ class SiteDevicesDialog(QDialog):
         self._drag_line: QGraphicsLineItem | None = None
 
         top = QVBoxLayout()
-        top.addWidget(QLabel("Мережа"))
+        top.addWidget(QLabel("Мережа сайту"))
         top.addWidget(self._view)
 
         actions = QHBoxLayout()
@@ -217,7 +217,8 @@ class SiteDevicesDialog(QDialog):
             b = self._node_items.get(link.device_b_id)
             if a and b:
                 item = DeviceLinkItem(a, b, link.port_a, link.port_b)
-                item.set_label(link.link_type.value)
+                kind_value = link.link_type.value if hasattr(link.link_type, "value") else str(link.link_type)
+                item.set_label(self._link_label(kind_value))
                 self._scene.addItem(item)
 
     def _add_or_update_nodes(self) -> list[DeviceNodeItem]:
@@ -257,6 +258,14 @@ class SiteDevicesDialog(QDialog):
             )
             == QMessageBox.StandardButton.Yes
         )
+
+    @staticmethod
+    def _link_label(kind_value: str) -> str:
+        return {
+            "fast_eth": "Fast Ethernet",
+            "gig_eth": "Gigabit Ethernet",
+            "optical": "Оптика",
+        }.get(kind_value, kind_value)
 
     def _on_port_pressed(self, item: DeviceNodeItem, side: str) -> None:
         self._drag_start = (item, side)
@@ -318,7 +327,16 @@ class DeviceFormDialog(QDialog):
 
         self._name = QLineEdit(self)
         self._type = QComboBox(self)
-        self._type.addItems([t.value for t in DeviceType])
+        device_options = [
+            ("Маршрутизатор", DeviceType.ROUTER),
+            ("Комутатор", DeviceType.SWITCH),
+            ("PoE комутатор", DeviceType.POE_SWITCH),
+            ("Точка доступу", DeviceType.AP),
+            ("Ретранслятор", DeviceType.REPEATER),
+            ("Антена", DeviceType.ANTENNA),
+        ]
+        for label, dtype in device_options:
+            self._type.addItem(label, dtype)
         self._ip = QLineEdit(self)
         self._port = QLineEdit(self)
         self._notes = QTextEdit(self)
@@ -338,12 +356,12 @@ class DeviceFormDialog(QDialog):
         form.addWidget(self._port)
         form.addWidget(QLabel("Позиція (x, y)"))
         form.addWidget(self._pos_label)
-        form.addWidget(QLabel("Нотатка"))
+        form.addWidget(QLabel("Нотатки"))
         form.addWidget(self._notes)
 
         actions = QHBoxLayout()
         save_btn = QPushButton("Зберегти", self)
-        cancel_btn = QPushButton("Відмінити", self)
+        cancel_btn = QPushButton("Скасувати", self)
         save_btn.clicked.connect(self.accept)
         cancel_btn.clicked.connect(self.reject)
         actions.addStretch(1)
@@ -357,7 +375,7 @@ class DeviceFormDialog(QDialog):
 
     def to_device(self) -> Device:
         name = self._name.text().strip() or "Пристрій"
-        dtype = DeviceType(self._type.currentText())
+        dtype = self._type.currentData()
         notes = self._notes.toPlainText().strip() or None
         return Device(
             id=uuid4().hex[:8],
@@ -373,23 +391,35 @@ class DeviceFormDialog(QDialog):
 class LinkFormDialog(QDialog):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Атрибути каналу")
+        self.setWindowTitle("Параметри лінка")
         self.setMinimumWidth(320)
 
         self._link_type = QComboBox(self)
-        self._link_type.addItems([t.value for t in LinkType])
+        link_options = [
+            ("Fast Ethernet", LinkType.FAST_ETH),
+            ("Gigabit Ethernet", LinkType.GIG_ETH),
+            ("Оптика", LinkType.OPTICAL),
+        ]
+        for label, ltype in link_options:
+            self._link_type.addItem(label, ltype)
+
         self._cable_type = QComboBox(self)
-        self._cable_type.addItems([t.value for t in CableType])
+        cable_options = [
+            ("Зовнішній", CableType.OUTDOOR),
+            ("Внутрішній", CableType.INDOOR),
+        ]
+        for label, ctype in cable_options:
+            self._cable_type.addItem(label, ctype)
 
         form = QVBoxLayout()
-        form.addWidget(QLabel("Тип каналу"))
+        form.addWidget(QLabel("Тип лінка"))
         form.addWidget(self._link_type)
         form.addWidget(QLabel("Тип кабелю"))
         form.addWidget(self._cable_type)
 
         actions = QHBoxLayout()
         save_btn = QPushButton("Зберегти", self)
-        cancel_btn = QPushButton("Відмінити", self)
+        cancel_btn = QPushButton("Скасувати", self)
         save_btn.clicked.connect(self.accept)
         cancel_btn.clicked.connect(self.reject)
         actions.addStretch(1)
@@ -402,7 +432,7 @@ class LinkFormDialog(QDialog):
         self.setLayout(layout)
 
     def link_type(self) -> LinkType:
-        return LinkType(self._link_type.currentText())
+        return self._link_type.currentData()
 
     def cable_type(self) -> CableType:
-        return CableType(self._cable_type.currentText())
+        return self._cable_type.currentData()

@@ -30,7 +30,13 @@
       }).addTo(map);
 
       const markers = new Map();
+      const links = new Map();
       let bridge = null;
+      let linkMode = false;
+      let dragLine = null;
+      let dragTooltip = null;
+      let dragSourceId = null;
+      let hoverTargetId = null;
 
       function ensureBridgeReady(cb) {
         if (bridge) { cb(); return; }
@@ -50,6 +56,15 @@
         marker.on('click', () => {
           if (bridge) { bridge.selectNode(id); }
         });
+        marker.on('mouseover', () => { hoverTargetId = id; });
+        marker.on('mouseout', () => { if (hoverTargetId === id) { hoverTargetId = null; } });
+        marker.on('mousedown', (e) => {
+          if (!linkMode) { return; }
+          dragSourceId = id;
+          const start = marker.getLatLng();
+          dragLine = L.polyline([start, start], { color: '#6b7280', dashArray: '6 6' }).addTo(map);
+          map.dragging.disable();
+        });
         marker.on('dragstart', (e) => {
           const pos = e.target.getLatLng();
           marker._prevLatLng = { lat: pos.lat, lng: pos.lng };
@@ -68,12 +83,104 @@
         marker.setLatLng([lat, lon]);
       }
 
+      function addLink(id, label, kind, info, distanceKm, latA, lonA, latB, lonB) {
+        const color = kind === 'ptp' ? '#2563eb' : (kind === 'ptmp' ? '#10b981' : '#f97316');
+        const line = L.polyline([[latA, lonA], [latB, lonB]], { color: color, weight: 3 });
+        line.addTo(map);
+        const labelText = distanceKm ? `${label} • ${distanceKm.toFixed(2)} км` : label;
+        line.bindTooltip(labelText, { permanent: true, direction: 'center' });
+        line.on('click', () => {
+          if (bridge) { bridge.selectLink(id); }
+        });
+        line.on('contextmenu', () => {
+          if (bridge) { bridge.requestDeleteLink(id); }
+        });
+        line.on('mouseover', (e) => {
+          const entry = links.get(id);
+          if (!entry) { return; }
+          entry.timer = setTimeout(() => {
+            entry.popup = L.popup({ closeButton: false, autoClose: false })
+              .setLatLng(e.latlng)
+              .setContent(info || '');
+            entry.popup.openOn(map);
+          }, 1500);
+        });
+        line.on('mouseout', () => {
+          const entry = links.get(id);
+          if (!entry) { return; }
+          if (entry.timer) { clearTimeout(entry.timer); entry.timer = null; }
+          if (entry.popup) { map.closePopup(entry.popup); entry.popup = null; }
+        });
+        links.set(id, { line, info, timer: null, popup: null, label, distanceKm });
+      }
+
+      function updateLink(id, latA, lonA, latB, lonB) {
+        const entry = links.get(id);
+        if (!entry) { return; }
+        entry.line.setLatLngs([[latA, lonA], [latB, lonB]]);
+      }
+
+      function updateLinkMeta(id, label, kind, info, distanceKm) {
+        const entry = links.get(id);
+        if (!entry) { return; }
+        const color = kind === 'ptp' ? '#2563eb' : (kind === 'ptmp' ? '#10b981' : '#f97316');
+        entry.line.setStyle({ color: color });
+        const tooltip = entry.line.getTooltip();
+        const labelText = distanceKm ? `${label} • ${distanceKm.toFixed(2)} км` : label;
+        if (tooltip) { tooltip.setContent(labelText); }
+        entry.info = info;
+        entry.label = label;
+        entry.distanceKm = distanceKm;
+      }
+
+      function removeLink(id) {
+        const entry = links.get(id);
+        if (!entry) { return; }
+        map.removeLayer(entry.line);
+        links.delete(id);
+      }
+
       function focusMarker(id) {
         const marker = markers.get(id);
         if (!marker) { return; }
         marker.openPopup();
         map.panTo(marker.getLatLng());
       }
+
+      function setLinkMode(value) {
+        linkMode = !!value;
+        markers.forEach((marker) => {
+          if (linkMode) {
+            marker.dragging.disable();
+          } else {
+            marker.dragging.enable();
+          }
+        });
+      }
+
+      map.on('mousemove', (e) => {
+        if (!dragLine) { return; }
+        const start = dragLine.getLatLngs()[0];
+        dragLine.setLatLngs([start, e.latlng]);
+        const km = start.distanceTo(e.latlng) / 1000;
+        if (!dragTooltip) {
+          dragTooltip = L.tooltip({ permanent: false, direction: 'top', opacity: 0.9 });
+        }
+        dragTooltip.setLatLng(e.latlng).setContent(`${km.toFixed(2)} км`);
+        dragTooltip.addTo(map);
+      });
+
+      map.on('mouseup', () => {
+        if (!dragLine) { return; }
+        map.removeLayer(dragLine);
+        dragLine = null;
+        if (dragTooltip) { map.removeLayer(dragTooltip); dragTooltip = null; }
+        map.dragging.enable();
+        if (dragSourceId && hoverTargetId && dragSourceId !== hoverTargetId) {
+          if (bridge) { bridge.requestSiteLink(dragSourceId, hoverTargetId); }
+        }
+        dragSourceId = null;
+      });
 
       map.on('contextmenu', (e) => {
         const x = e.originalEvent.clientX;
@@ -82,7 +189,11 @@
       });
       window.addMarker = addMarker;
       window.moveMarker = moveMarker;
+      window.addLink = addLink;
+      window.updateLink = updateLink;
+      window.removeLink = removeLink;
       window.focusMarker = focusMarker;
+      window.setLinkMode = setLinkMode;
 
       ensureBridgeReady(() => {});
     </script>

@@ -138,6 +138,11 @@ class Link:
     site_a_id: str
     site_b_id: str
     frequency_ghz: Optional[float] = None
+    ssid: Optional[str] = None
+    password: Optional[str] = None
+    link_type: Optional[LinkType] = None
+    cable_type: Optional[CableType] = None
+    distance_km: Optional[float] = None
     channel_width_mhz: Optional[int] = None
     capacity_mbps: Optional[int] = None
     metadata: Dict[str, str] = field(default_factory=dict)

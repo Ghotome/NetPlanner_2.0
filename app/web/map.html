@@ -84,6 +84,8 @@
       const coverageLayer = L.layerGroup().addTo(map);
       let bridge = null;
       let linkMode = false;
+      let heightMode = false;
+      let losMode = false;
       let dragLine = null;
       let dragTooltip = null;
       let dragSourceId = null;
@@ -127,8 +129,8 @@
         marker.on('dblclick', () => {
           if (bridge) { bridge.openSite(id); }
         });
-        marker.on('contextmenu', () => {
-          if (bridge) { bridge.requestRenameSite(id); }
+        marker.on('contextmenu', (e) => {
+          if (bridge) { bridge.showSiteMenu(id, e.originalEvent.clientX, e.originalEvent.clientY); }
         });
         marker.on('mouseover', () => { hoverTargetId = id; });
         marker.on('mouseout', () => { if (hoverTargetId === id) { hoverTargetId = null; } });
@@ -317,13 +319,14 @@
 
       function setLinkMode(value) {
         linkMode = !!value;
-        markers.forEach((marker) => {
-          if (linkMode) {
-            marker.dragging.disable();
-          } else {
-            marker.dragging.enable();
-          }
-        });
+      }
+
+      function setHeightMode(value) {
+        heightMode = !!value;
+      }
+
+      function setLosMode(value) {
+        losMode = !!value;
       }
 
       function setElevationVisible(enabled) {
@@ -348,27 +351,13 @@
       });
 
       map.on('mousemove', (e) => {
-        if (!dragLine) { return; }
-        const start = dragLine.getLatLngs()[0];
-        dragLine.setLatLngs([start, e.latlng]);
-        const km = start.distanceTo(e.latlng) / 1000;
-        if (!dragTooltip) {
-          dragTooltip = L.tooltip({ permanent: false, direction: 'top', opacity: 0.9 });
-        }
-        dragTooltip.setLatLng(e.latlng).setContent(`${km.toFixed(2)} км`);
-        dragTooltip.addTo(map);
+        if (!heightMode) { return; }
+        if (bridge) { bridge.reportHeight(e.latlng.lat, e.latlng.lng, e.originalEvent.clientX, e.originalEvent.clientY); }
       });
 
-      map.on('mouseup', () => {
-        if (!dragLine) { return; }
-        map.removeLayer(dragLine);
-        dragLine = null;
-        if (dragTooltip) { map.removeLayer(dragTooltip); dragTooltip = null; }
-        map.dragging.enable();
-        if (dragSourceId && hoverTargetId && dragSourceId !== hoverTargetId) {
-          if (bridge) { bridge.requestSiteLink(dragSourceId, hoverTargetId); }
-        }
-        dragSourceId = null;
+      map.on('click', (e) => {
+        if (!losMode) { return; }
+        if (bridge) { bridge.mapClick(e.latlng.lat, e.latlng.lng); }
       });
 
       map.on('contextmenu', (e) => {
@@ -385,6 +374,8 @@
       window.removeLink = removeLink;
       window.focusMarker = focusMarker;
       window.setLinkMode = setLinkMode;
+      window.setHeightMode = setHeightMode;
+      window.setLosMode = setLosMode;
       window.setElevationVisible = setElevationVisible;
       window.addCoverage = addCoverage;
       window.updateCoverage = updateCoverage;

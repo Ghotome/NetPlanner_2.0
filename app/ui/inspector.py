@@ -44,6 +44,7 @@ class InspectorPanel(QWidget):
         self._site_frequency = QLineEdit(self)
         self._site_tx_power = QLineEdit(self)
         self._site_rx_gain = QLineEdit(self)
+        self._site_rx_height = QLineEdit(self)
         self._site_rx_sens = QLineEdit(self)
         self._site_misc_losses = QLineEdit(self)
         self._site_margin = QLineEdit(self)
@@ -65,6 +66,9 @@ class InspectorPanel(QWidget):
         gain_validator = QDoubleValidator(0.0, 60.0, 1, self)
         gain_validator.setLocale(QLocale.c())
         self._site_rx_gain.setValidator(gain_validator)
+        rx_height_validator = QDoubleValidator(0.0, 200.0, 2, self)
+        rx_height_validator.setLocale(QLocale.c())
+        self._site_rx_height.setValidator(rx_height_validator)
         sens_validator = QDoubleValidator(-150.0, -30.0, 2, self)
         sens_validator.setLocale(QLocale.c())
         self._site_rx_sens.setValidator(sens_validator)
@@ -88,6 +92,7 @@ class InspectorPanel(QWidget):
         self._site_rx_gain.textChanged.connect(self._update_eirp_calculator)
         self._site_misc_losses.textChanged.connect(self._update_eirp_calculator)
         self._site_margin.textChanged.connect(self._update_eirp_calculator)
+        self._site_rx_height.textChanged.connect(self._update_eirp_calculator)
         for field in (
             self._site_azimuth,
             self._site_beamwidth,
@@ -96,6 +101,7 @@ class InspectorPanel(QWidget):
             self._site_frequency,
             self._site_tx_power,
             self._site_rx_gain,
+            self._site_rx_height,
             self._site_rx_sens,
             self._site_misc_losses,
             self._site_margin,
@@ -115,6 +121,7 @@ class InspectorPanel(QWidget):
         label_frequency = QLabel("Частота (ГГц):")
         label_tx_power = QLabel("Потужність TX (dBm):")
         label_rx_gain = QLabel("Підсилення RX (dBi):")
+        label_rx_height = QLabel("Висота RX (м):")
         label_rx_sens = QLabel("Чутливість RX (dBm):")
         label_losses = QLabel("Втрати (дБ):")
         label_margin = QLabel("Margin (дБ):")
@@ -125,6 +132,7 @@ class InspectorPanel(QWidget):
 
         label_rx_sens.setToolTip("Параметр береться зі специфікації пристрою (RX sensitivity).")
         label_rx_gain.setToolTip("Підсилення приймальної антени зі специфікації.")
+        label_rx_height.setToolTip("Висота приймальної антени над землею.")
         label_losses.setToolTip("Втрати на АФТ: кабель, конектори, грозозахист, роз'єми.")
         label_margin.setToolTip(
             "Запас лінку (fade margin) на завади/погоду/деградацію.\n"
@@ -156,6 +164,7 @@ class InspectorPanel(QWidget):
         site_layout.addRow(label_tx_power, self._site_tx_power)
         site_layout.addRow(label_mcs, self._site_mcs)
         site_layout.addRow(label_rx_gain, self._site_rx_gain)
+        site_layout.addRow(label_rx_height, self._site_rx_height)
         site_layout.addRow(label_rx_sens, self._site_rx_sens)
         site_layout.addRow(label_losses, self._site_misc_losses)
         site_layout.addRow(label_margin, self._site_margin)
@@ -251,6 +260,7 @@ class InspectorPanel(QWidget):
         self._site_frequency.setText("" if antenna.frequency_ghz is None else str(antenna.frequency_ghz))
         self._site_tx_power.setText("" if antenna.tx_power_dbm is None else str(antenna.tx_power_dbm))
         self._site_rx_gain.setText("" if antenna.rx_gain_dbi is None else str(antenna.rx_gain_dbi))
+        self._site_rx_height.setText("" if antenna.rx_height_m is None else str(antenna.rx_height_m))
         if antenna.mcs:
             idx = self._site_mcs.findData(antenna.mcs)
             if idx >= 0:
@@ -378,6 +388,7 @@ class InspectorPanel(QWidget):
             "tx_power_dbm": float(self._site_tx_power.text()) if self._site_tx_power.text().strip() else None,
             "mcs": self._site_mcs.currentData(),
             "rx_gain_dbi": float(self._site_rx_gain.text()) if self._site_rx_gain.text().strip() else None,
+            "rx_height_m": float(self._site_rx_height.text()) if self._site_rx_height.text().strip() else None,
             "rx_sensitivity_dbm": float(self._site_rx_sens.text()) if self._site_rx_sens.text().strip() else None,
             "misc_losses_db": float(self._site_misc_losses.text()) if self._site_misc_losses.text().strip() else None,
             "link_margin_db": float(self._site_margin.text()) if self._site_margin.text().strip() else None,

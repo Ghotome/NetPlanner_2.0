@@ -13,6 +13,9 @@ class MapBridge(QObject):
     def __init__(
         self,
         on_show_context_menu: Callable[[float, float, int, int], None],
+        on_show_site_menu: Callable[[str, int, int], None],
+        on_report_height: Callable[[float, float, int, int], None],
+        on_map_click: Callable[[float, float], None],
         on_request_move_node: Callable[[str, float, float, float, float], None],
         on_request_site_link: Callable[[str, str], None],
         on_request_delete_link: Callable[[str], None],
@@ -24,6 +27,9 @@ class MapBridge(QObject):
     ) -> None:
         super().__init__()
         self._on_show_context_menu = on_show_context_menu
+        self._on_show_site_menu = on_show_site_menu
+        self._on_report_height = on_report_height
+        self._on_map_click = on_map_click
         self._on_request_move_node = on_request_move_node
         self._on_request_site_link = on_request_site_link
         self._on_request_delete_link = on_request_delete_link
@@ -36,6 +42,18 @@ class MapBridge(QObject):
     @Slot(float, float, int, int)
     def showContextMenu(self, lat: float, lon: float, x: int, y: int) -> None:
         self._on_show_context_menu(lat, lon, x, y)
+
+    @Slot(str, int, int)
+    def showSiteMenu(self, site_id: str, x: int, y: int) -> None:
+        self._on_show_site_menu(site_id, x, y)
+
+    @Slot(float, float, int, int)
+    def reportHeight(self, lat: float, lon: float, x: int, y: int) -> None:
+        self._on_report_height(lat, lon, x, y)
+
+    @Slot(float, float)
+    def mapClick(self, lat: float, lon: float) -> None:
+        self._on_map_click(lat, lon)
 
     @Slot(str, float, float, float, float)
     def requestMoveNode(
@@ -78,6 +96,9 @@ class MapView(QWebEngineView):
     def __init__(
         self,
         on_show_context_menu: Callable[[float, float, int, int], None],
+        on_show_site_menu: Callable[[str, int, int], None],
+        on_report_height: Callable[[float, float, int, int], None],
+        on_map_click: Callable[[float, float], None],
         on_request_move_node: Callable[[str, float, float, float, float], None],
         on_request_site_link: Callable[[str, str], None],
         on_request_delete_link: Callable[[str], None],
@@ -91,6 +112,9 @@ class MapView(QWebEngineView):
         super().__init__(parent)
         self._bridge = MapBridge(
             on_show_context_menu,
+            on_show_site_menu,
+            on_report_height,
+            on_map_click,
             on_request_move_node,
             on_request_site_link,
             on_request_delete_link,
@@ -202,6 +226,12 @@ class MapView(QWebEngineView):
 
     def set_link_mode(self, enabled: bool) -> None:
         self.page().runJavaScript(f"setLinkMode({str(enabled).lower()});")
+
+    def set_height_mode(self, enabled: bool) -> None:
+        self.page().runJavaScript(f"setHeightMode({str(enabled).lower()});")
+
+    def set_los_mode(self, enabled: bool) -> None:
+        self.page().runJavaScript(f"setLosMode({str(enabled).lower()});")
 
     def update_link_meta(
         self, link_id: str, label: str, kind: str, info: str, distance_km: float | None

@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QSplitter,
+    QToolTip,
     QTreeWidgetItem,
     QWidget,
 )
@@ -21,13 +22,14 @@ from PySide6.QtGui import QAction
 from app.coverage import CoverageCalculator
 from app.domain import GeoPoint, Link, LinkKind, NetworkProject, Site, SiteKind, StatusState
 from app.elevation import ElevationProvider
-from app.link_analyzer import LinkAnalyzer
+from app.link_analyzer import LinkAnalyzer, LinkProfile
 from app.project_io import load_project, save_project
 from app.monitoring import PingChecker
 from app.ui.monitoring_panel import MonitoringPanel
 from app.ui.inspector import InspectorPanel
 from app.ui.link_profile_dialog import LinkProfileDialog
 from app.ui.link_dialog import SiteLinkDialog
+from app.ui.eirp_calculator import EirpCalculatorDialog
 from app.ui.map_view import MapView
 from app.ui.project_tree import ProjectTree
 from app.ui.site_dialog import SiteDevicesDialog
@@ -49,6 +51,9 @@ class MainWindow(QMainWindow):
 
         self.map_view = MapView(
             on_show_context_menu=self._on_map_context_menu,
+            on_show_site_menu=self._on_map_site_menu,
+            on_report_height=self._on_report_height,
+            on_map_click=self._on_map_click,
             on_request_move_node=self._on_map_request_move_node,
             on_request_site_link=self._on_map_request_site_link,
             on_request_delete_link=self._on_map_request_delete_link,
@@ -100,7 +105,14 @@ class MainWindow(QMainWindow):
         self._apply_styles()
         self._site_counter = 1
         self.destroyed.connect(self._cleanup_on_close)
-        self._link_mode = False
+        self._pending_link_site_id: str | None = None
+        self._height_mode = False
+        self._height_timer = QTimer(self)
+        self._height_timer.setSingleShot(True)
+        self._height_timer.timeout.connect(self._show_height_tooltip)
+        self._pending_height: tuple[float, float, int, int] | None = None
+        self._los_mode = False
+        self._los_points: list[tuple[float, float]] = []
         self._project_path: str | None = None
         self._dirty = False
         self._autosave_timer = QTimer(self)
@@ -133,10 +145,6 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)
 
     def _init_actions(self) -> None:
-        self._add_link_action = QAction("Додати лінк", self)
-        self._add_link_action.setCheckable(True)
-        self._add_link_action.toggled.connect(self._toggle_link_mode)
-
         self._elevation_action = QAction("Шар висот", self)
         self._elevation_action.setCheckable(True)
         self._elevation_action.toggled.connect(self._toggle_elevation_layer)
@@ -146,6 +154,16 @@ class MainWindow(QMainWindow):
         self._coverage_action.setChecked(True)
         self._coverage_action.toggled.connect(self._toggle_coverage_layer)
 
+        self._height_action = QAction("Визначити висоту", self)
+        self._height_action.setCheckable(True)
+        self._height_action.toggled.connect(self._toggle_height_mode)
+
+        self._eirp_action = QAction("Розрахувати EIRP", self)
+        self._eirp_action.triggered.connect(self._open_eirp_calculator)
+
+        self._los_action = QAction("LOS", self)
+        self._los_action.triggered.connect(self._start_los_mode)
+
     def _confirm_action(self, title: str, message: str) -> bool:
         return (
             QMessageBox.question(
@@ -154,14 +172,6 @@ class MainWindow(QMainWindow):
             == QMessageBox.StandardButton.Yes
         )
 
-    def _toggle_link_mode(self, enabled: bool) -> None:
-        self._link_mode = enabled
-        self.map_view.set_link_mode(enabled)
-        if enabled:
-            self.statusBar().showMessage("Перетягніть лінію між сайтами")
-        else:
-            self.statusBar().clearMessage()
-
     def _toggle_elevation_layer(self, enabled: bool) -> None:
         self.map_view.set_elevation_layer(enabled)
         if enabled:
@@ -169,6 +179,16 @@ class MainWindow(QMainWindow):
 
     def _toggle_coverage_layer(self, enabled: bool) -> None:
         self.map_view.set_coverage_visible(enabled)
+
+    def _toggle_height_mode(self, enabled: bool) -> None:
+        self._height_mode = enabled
+        self._pending_height = None
+        self.map_view.set_height_mode(enabled)
+        if not enabled:
+            QToolTip.hideText()
+            self.statusBar().clearMessage()
+        else:
+            self.statusBar().showMessage("Наведіть курсор на мапу для висоти")
 
     def _init_menu_bar(self) -> None:
         menu = self.menuBar()
@@ -190,7 +210,9 @@ class MainWindow(QMainWindow):
         view_menu.addAction(self._coverage_action)
 
         tools_menu = menu.addMenu("Інструменти")
-        tools_menu.addAction(self._add_link_action)
+        tools_menu.addAction(self._height_action)
+        tools_menu.addAction(self._eirp_action)
+        tools_menu.addAction(self._los_action)
 
         help_menu = menu.addMenu("Довідка")
         help_menu.addAction("Про програму", self._about)
@@ -319,6 +341,11 @@ class MainWindow(QMainWindow):
         site = self._project.sites.get(site_id)
         self.inspector.show_site(site)
         self.map_view.focus_marker(site_id)
+        if self._pending_link_site_id and self._pending_link_site_id != site_id:
+            start_id = self._pending_link_site_id
+            self._pending_link_site_id = None
+            self.statusBar().clearMessage()
+            self._on_map_request_site_link(start_id, site_id)
         if site is None:
             return
         elevation = self._elevation.get_elevation(site.location.lat, site.location.lon)
@@ -349,6 +376,117 @@ class MainWindow(QMainWindow):
             self._update_site_coverage(site)
             self.project_tree.set_project(self._project)
             self._dirty = True
+
+    def _on_report_height(self, lat: float, lon: float, x: int, y: int) -> None:
+        if not self._height_mode:
+            return
+        self._pending_height = (lat, lon, x, y)
+        self._height_timer.start(120)
+
+    def _show_height_tooltip(self) -> None:
+        if not self._pending_height:
+            return
+        lat, lon, x, y = self._pending_height
+        if not self._elevation.available:
+            text = "Немає даних (Pillow?)"
+        else:
+            elev = self._elevation.get_elevation(lat, lon)
+            text = "—" if elev is None else f"Висота: {elev:.1f} м"
+        pos = self.map_view.mapToGlobal(QPoint(x, y))
+        QToolTip.showText(pos, text, self.map_view)
+
+    def _open_eirp_calculator(self) -> None:
+        antenna = None
+        item = self.project_tree.currentItem()
+        if item is not None:
+            node_id = item.data(0, Qt.ItemDataRole.UserRole)
+            site_id = node_id.split(":", 1)[0] if isinstance(node_id, str) else node_id
+            site = self._project.sites.get(site_id)
+            if site:
+                antenna = site.antenna
+        dialog = EirpCalculatorDialog(antenna, self)
+        dialog.exec()
+
+    def _start_los_mode(self) -> None:
+        QMessageBox.information(
+            self,
+            "LOS",
+            "Оберіть 2 точки на мапі ЛКМ для розрахунку LOS.",
+        )
+        self._los_mode = True
+        self._los_points = []
+        self.map_view.set_los_mode(True)
+        self.statusBar().showMessage("LOS: оберіть 2 точки на мапі")
+
+    def _on_map_click(self, lat: float, lon: float) -> None:
+        if not self._los_mode:
+            return
+        self._los_points.append((lat, lon))
+        if len(self._los_points) < 2:
+            self.statusBar().showMessage("LOS: оберіть другу точку")
+            return
+        a, b = self._los_points
+        self._los_mode = False
+        self._los_points = []
+        self.map_view.set_los_mode(False)
+        self.statusBar().clearMessage()
+        self._run_los_between_points(a, b)
+
+    def _run_los_between_points(self, a: tuple[float, float], b: tuple[float, float]) -> None:
+        if not self._elevation.available:
+            QMessageBox.warning(self, "LOS", "Немає даних висот (Pillow?)")
+            return
+        lat1, lon1 = a
+        lat2, lon2 = b
+        samples = 40
+        total_km = self._distance_km(lat1, lon1, lat2, lon2)
+        distances = []
+        elevations = []
+        for i in range(samples + 1):
+            t = i / samples
+            lat = lat1 + (lat2 - lat1) * t
+            lon = lon1 + (lon2 - lon1) * t
+            elev = self._elevation.get_elevation(lat, lon)
+            if elev is None:
+                QMessageBox.warning(self, "LOS", "Немає даних висот для траси")
+                return
+            elevations.append(elev)
+            distances.append(total_km * t)
+        start = elevations[0]
+        end = elevations[-1]
+        blocked = False
+        max_obstruction = 0.0
+        for i in range(1, len(elevations) - 1):
+            expected = start + (end - start) * (distances[i] / total_km if total_km else 0.0)
+            obstruction = elevations[i] - expected
+            if obstruction > 0:
+                blocked = True
+                max_obstruction = max(max_obstruction, obstruction)
+        status = "LOS OK" if not blocked else "Blocked"
+        profile = LinkProfile(
+            distances_km=distances,
+            elevations_m=elevations,
+            los_ok=not blocked,
+            clearance_needed_m=max_obstruction if blocked else 0.0,
+            status=status,
+        )
+        dialog = LinkProfileDialog(profile, self)
+        dialog.exec()
+
+    def _on_map_site_menu(self, site_id: str, x: int, y: int) -> None:
+        site = self._project.sites.get(site_id)
+        if not site:
+            return
+        menu = QMenu(self)
+        rename_action = menu.addAction("Перейменувати")
+        link_action = menu.addAction("Створити лінк")
+        chosen = menu.exec(self.map_view.mapToGlobal(QPoint(x, y)))
+        if chosen == rename_action:
+            self._on_map_request_rename_site(site_id)
+            return
+        if chosen == link_action:
+            self._pending_link_site_id = site_id
+            self.statusBar().showMessage("Оберіть цільовий сайт для лінку")
 
     def _on_tree_selection_changed(self) -> None:
         item = self.project_tree.currentItem()
@@ -517,6 +655,7 @@ class MainWindow(QMainWindow):
         site.antenna.tx_power_dbm = data.get("tx_power_dbm")
         site.antenna.mcs = data.get("mcs")
         site.antenna.rx_gain_dbi = data.get("rx_gain_dbi")
+        site.antenna.rx_height_m = data.get("rx_height_m")
         site.antenna.rx_sensitivity_dbm = data.get("rx_sensitivity_dbm")
         site.antenna.misc_losses_db = data.get("misc_losses_db")
         site.antenna.link_margin_db = data.get("link_margin_db")
@@ -858,7 +997,9 @@ class MainWindow(QMainWindow):
         if elevation is None:
             return None
         base_height = elevation + (site.antenna.height_m or 0)
-        rx_height_m = 2.0
+        rx_height_m = site.antenna.rx_height_m
+        if rx_height_m is None:
+            rx_height_m = 2.0
         fresnel_factor = 0.6
         freq_ghz = site.antenna.frequency_ghz
         step_km = max(0.1, range_km / 24)

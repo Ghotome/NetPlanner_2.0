@@ -95,6 +95,7 @@ class AntennaParams:
     frequency_ghz: Optional[float] = None
     tx_power_dbm: Optional[float] = None
     rx_gain_dbi: Optional[float] = None
+    rx_height_m: Optional[float] = None
     rx_sensitivity_dbm: Optional[float] = None
     misc_losses_db: Optional[float] = None
     link_margin_db: Optional[float] = None

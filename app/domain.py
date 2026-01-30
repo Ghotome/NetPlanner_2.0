@@ -75,6 +75,7 @@ class Device:
     device_type: DeviceType
     ip_address: Optional[str] = None
     port: Optional[str] = None
+    ports: Dict[str, int] = field(default_factory=dict)
     coordinates: Optional[GeoPoint] = None
     position: Optional[tuple[float, float]] = None
     notes_text: Optional[str] = None
@@ -148,6 +149,7 @@ class Link:
     kind: LinkKind
     site_a_id: str
     site_b_id: str
+    notes_text: Optional[str] = None
     frequency_ghz: Optional[float] = None
     ssid: Optional[str] = None
     password: Optional[str] = None

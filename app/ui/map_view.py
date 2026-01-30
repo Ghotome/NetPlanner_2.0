@@ -155,6 +155,9 @@ class MapView(QWebEngineView):
     def update_marker_label(self, node_id: str, name: str, kind: str) -> None:
         self.page().runJavaScript(f"updateMarkerLabel({node_id!r}, {name!r}, {kind!r});")
 
+    def remove_marker(self, node_id: str) -> None:
+        self.page().runJavaScript(f"removeMarker({node_id!r});")
+
     def add_coverage(
         self,
         site_id: str,

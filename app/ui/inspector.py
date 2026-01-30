@@ -195,6 +195,7 @@ class InspectorPanel(QWidget):
         self._link_frequency.setValidator(freq_validator)
         self._link_ssid = QLineEdit(self)
         self._link_password = QLineEdit(self)
+        self._link_notes = QLineEdit(self)
 
         self._link_type = QComboBox(self)
         self._link_type.addItem("Fast Ethernet", LinkType.FAST_ETH)
@@ -216,6 +217,7 @@ class InspectorPanel(QWidget):
         link_layout.addRow(self._label_frequency, self._link_frequency)
         link_layout.addRow(self._label_ssid, self._link_ssid)
         link_layout.addRow(self._label_password, self._link_password)
+        link_layout.addRow(QLabel("Нотатки:"), self._link_notes)
         link_layout.addRow(self._label_link_type, self._link_type)
         link_layout.addRow(self._label_cable_type, self._cable_type)
         link_layout.addRow(self._apply_btn)
@@ -301,6 +303,7 @@ class InspectorPanel(QWidget):
                 self._link_type.setCurrentIndex(self._link_type.findData(link.link_type))
             if link.cable_type is not None:
                 self._cable_type.setCurrentIndex(self._cable_type.findData(link.cable_type))
+        self._link_notes.setText(link.notes_text or "")
         self._toggle_link_fields()
         self._site_group.setVisible(False)
         self._link_group.setVisible(True)
@@ -367,6 +370,7 @@ class InspectorPanel(QWidget):
             "password": self._link_password.text().strip() if is_wireless else None,
             "link_type": None if is_wireless else self._link_type.currentData(),
             "cable_type": None if is_wireless else self._cable_type.currentData(),
+            "notes_text": self._link_notes.text().strip() or None,
         }
         self.link_updated.emit(self._current_link_id, payload)
 

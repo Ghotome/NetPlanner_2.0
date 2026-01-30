@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 from math import asin, atan2, cos, radians, sin, sqrt
 from uuid import uuid4
 
@@ -15,6 +16,9 @@ from PySide6.QtWidgets import (
     QSplitter,
     QToolTip,
     QTreeWidgetItem,
+    QDialog,
+    QTextEdit,
+    QVBoxLayout,
     QWidget,
 )
 from PySide6.QtGui import QAction
@@ -215,6 +219,7 @@ class MainWindow(QMainWindow):
         tools_menu.addAction(self._los_action)
 
         help_menu = menu.addMenu("Довідка")
+        help_menu.addAction("Гайд користувача", self._show_user_guide)
         help_menu.addAction("Про програму", self._about)
 
     def _apply_styles(self) -> None:
@@ -233,6 +238,22 @@ class MainWindow(QMainWindow):
 
     def _about(self) -> None:
         QMessageBox.information(self, "Про програму", "Network Planner v1.0.0")
+
+    def _show_user_guide(self) -> None:
+        guide_path = Path(__file__).resolve().parents[1] / "USER_GUIDE.md"
+        if not guide_path.exists():
+            QMessageBox.information(self, "Гайд користувача", "Файл USER_GUIDE.md не знайдено.")
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Гайд користувача")
+        dialog.resize(760, 600)
+        text = QTextEdit(dialog)
+        text.setReadOnly(True)
+        text.setPlainText(guide_path.read_text(encoding="utf-8"))
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(text)
+        dialog.setLayout(layout)
+        dialog.exec()
 
     def _on_map_context_menu(self, lat: float, lon: float, x: int, y: int) -> None:
         menu = QMenu(self)
@@ -411,7 +432,7 @@ class MainWindow(QMainWindow):
         QMessageBox.information(
             self,
             "LOS",
-            "Оберіть 2 точки на мапі ЛКМ для розрахунку LOS.",
+            "Оберіть 2 точки на мапі для розрахунку траекторії прямої видимості між ними.",
         )
         self._los_mode = True
         self._los_points = []
@@ -480,6 +501,7 @@ class MainWindow(QMainWindow):
         menu = QMenu(self)
         rename_action = menu.addAction("Перейменувати")
         link_action = menu.addAction("Створити лінк")
+        delete_action = menu.addAction("Видалити сайт")
         chosen = menu.exec(self.map_view.mapToGlobal(QPoint(x, y)))
         if chosen == rename_action:
             self._on_map_request_rename_site(site_id)
@@ -487,6 +509,9 @@ class MainWindow(QMainWindow):
         if chosen == link_action:
             self._pending_link_site_id = site_id
             self.statusBar().showMessage("Оберіть цільовий сайт для лінку")
+            return
+        if chosen == delete_action:
+            self._delete_site(site_id)
 
     def _on_tree_selection_changed(self) -> None:
         item = self.project_tree.currentItem()
@@ -564,12 +589,14 @@ class MainWindow(QMainWindow):
 
         kind = dialog.link_kind()
         is_wireless = kind in (LinkKind.PTP, LinkKind.PTMP)
+        name = dialog.link_name() or f"{site_a.name} ↔ {site_b.name}"
         link = Link(
             id=uuid4().hex[:8],
-            name=f"{site_a.name} ↔ {site_b.name}",
+            name=name,
             kind=kind,
             site_a_id=site_a.id,
             site_b_id=site_b.id,
+            notes_text=dialog.notes_text(),
             frequency_ghz=dialog.frequency_ghz() if is_wireless else None,
             ssid=dialog.ssid() if is_wireless else None,
             password=dialog.password() if is_wireless else None,
@@ -607,6 +634,26 @@ class MainWindow(QMainWindow):
         self.map_view.remove_link(link_id)
         self._dirty = True
 
+    def _delete_site(self, site_id: str) -> None:
+        site = self._project.sites.get(site_id)
+        if not site:
+            return
+        if not self._confirm_action("Підтвердження", f"Видалити сайт '{site.name}'?"):
+            return
+        links_to_remove = [
+            link_id
+            for link_id, link in self._project.links.items()
+            if link.site_a_id == site_id or link.site_b_id == site_id
+        ]
+        for link_id in links_to_remove:
+            self.map_view.remove_link(link_id)
+        self._project.remove_site(site_id)
+        self.map_view.remove_coverage(site_id)
+        self.map_view.remove_marker(site_id)
+        self.project_tree.set_project(self._project)
+        self.inspector.show_site(None)
+        self._dirty = True
+
     def _on_inspector_link_updated(self, link_id: str, data: dict) -> None:
         link = self._project.links.get(link_id)
         if link is None:
@@ -618,6 +665,7 @@ class MainWindow(QMainWindow):
         link.password = data["password"]
         link.link_type = data["link_type"]
         link.cable_type = data["cable_type"]
+        link.notes_text = data.get("notes_text")
         site_a = self._project.sites.get(link.site_a_id)
         site_b = self._project.sites.get(link.site_b_id)
         if site_a and site_b:
@@ -709,6 +757,7 @@ class MainWindow(QMainWindow):
         kind_value = link.kind.value if hasattr(link.kind, "value") else str(link.kind)
         distance_text = f"{link.distance_km:.2f} км" if link.distance_km is not None else "-"
         antenna_height = site_a.antenna.height_m if site_a and site_a.antenna else None
+        notes_text = f"\nНотатки: {link.notes_text}" if link.notes_text else ""
         if kind_value in ("ptp", "ptmp"):
             return (
                 f"Тип: {kind_value}\\n"
@@ -717,6 +766,7 @@ class MainWindow(QMainWindow):
                 f"SSID: {link.ssid or '-'}\\n"
                 f"Пароль: {link.password or '-'}\\n"
                 f"Дистанція: {distance_text}"
+                f"{notes_text}"
             )
         return (
             "Тип: Ethernet | "
@@ -725,6 +775,7 @@ class MainWindow(QMainWindow):
             f"Кабель: {link.cable_type.value if hasattr(link.cable_type, 'value') else (link.cable_type or '-')}"
             " | "
             f"Дистанція: {distance_text}"
+            f"{notes_text}"
         )
 
     @staticmethod
@@ -860,8 +911,9 @@ class MainWindow(QMainWindow):
         node_id = item.data(0, Qt.ItemDataRole.UserRole)
         menu = QMenu(self)
         rename_action = menu.addAction("Перейменувати")
+        delete_action = menu.addAction("Видалити")
         chosen = menu.exec(self.project_tree.viewport().mapToGlobal(pos))
-        if chosen != rename_action:
+        if chosen not in (rename_action, delete_action):
             return
 
         if isinstance(node_id, str) and ":" in node_id:
@@ -872,34 +924,46 @@ class MainWindow(QMainWindow):
             device = site.devices.get(device_id)
             if not device:
                 return
-            new_name, ok = QInputDialog.getText(self, "Перейменувати пристрій", "Нова назва:", text=device.name)
-            if ok and new_name.strip():
-                device.name = new_name.strip()
+            if chosen == delete_action:
+                if self._confirm_action("Підтвердження", f"Видалити пристрій '{device.name}'?"):
+                    site.remove_device(device_id)
+            else:
+                new_name, ok = QInputDialog.getText(
+                    self, "Перейменувати пристрій", "Нова назва:", text=device.name
+                )
+                if ok and new_name.strip():
+                    device.name = new_name.strip()
         elif isinstance(node_id, str) and node_id in self._project.links:
             link = self._project.links.get(node_id)
             if not link:
                 return
-            new_name, ok = QInputDialog.getText(self, "Перейменувати лінк", "Нова назва:", text=link.name)
-            if ok and new_name.strip():
-                link.name = new_name.strip()
-                site_a = self._project.sites.get(link.site_a_id)
-                if site_a:
-                    self.map_view.update_link_meta(
-                        link.id,
-                        self._link_label(link.kind),
-                        self._link_kind_value(link.kind),
-                        self._link_info(link, site_a),
-                        link.distance_km,
-                    )
+            if chosen == delete_action:
+                self._on_map_request_delete_link(link.id)
+            else:
+                new_name, ok = QInputDialog.getText(self, "Перейменувати лінк", "Нова назва:", text=link.name)
+                if ok and new_name.strip():
+                    link.name = new_name.strip()
+                    site_a = self._project.sites.get(link.site_a_id)
+                    if site_a:
+                        self.map_view.update_link_meta(
+                            link.id,
+                            self._link_label(link.kind),
+                            self._link_kind_value(link.kind),
+                            self._link_info(link, site_a),
+                            link.distance_km,
+                        )
         else:
             site = self._project.sites.get(node_id)
             if not site:
                 return
-            new_name, ok = QInputDialog.getText(self, "Перейменувати сайт", "Нова назва:", text=site.name)
-            if ok and new_name.strip():
-                site.name = new_name.strip()
-                self.map_view.update_marker_label(site.id, site.name, self._site_kind_label(site.kind.value))
-                self._update_site_coverage(site)
+            if chosen == delete_action:
+                self._delete_site(site.id)
+            else:
+                new_name, ok = QInputDialog.getText(self, "Перейменувати сайт", "Нова назва:", text=site.name)
+                if ok and new_name.strip():
+                    site.name = new_name.strip()
+                    self.map_view.update_marker_label(site.id, site.name, self._site_kind_label(site.kind.value))
+                    self._update_site_coverage(site)
 
         self.project_tree.set_project(self._project)
         self._dirty = True

@@ -98,6 +98,7 @@ def link_to_dict(link: Link) -> dict[str, Any]:
         "kind": link.kind.value if hasattr(link.kind, "value") else str(link.kind),
         "site_a_id": link.site_a_id,
         "site_b_id": link.site_b_id,
+        "notes_text": link.notes_text,
         "frequency_ghz": link.frequency_ghz,
         "ssid": link.ssid,
         "password": link.password,
@@ -118,6 +119,7 @@ def link_from_dict(data: dict[str, Any]) -> Link:
         site_a_id=data.get("site_a_id", ""),
         site_b_id=data.get("site_b_id", ""),
     )
+    link.notes_text = data.get("notes_text")
     link.frequency_ghz = data.get("frequency_ghz")
     link.ssid = data.get("ssid")
     link.password = data.get("password")
@@ -137,6 +139,7 @@ def device_to_dict(device: Device) -> dict[str, Any]:
         "device_type": device.device_type.value,
         "ip_address": device.ip_address,
         "port": device.port,
+        "ports": device.ports,
         "coordinates": geopoint_to_dict(device.coordinates) if device.coordinates else None,
         "position": list(device.position) if device.position else None,
         "notes_text": device.notes_text,
@@ -155,6 +158,7 @@ def device_from_dict(data: dict[str, Any]) -> Device:
     )
     device.ip_address = data.get("ip_address")
     device.port = data.get("port")
+    device.ports = data.get("ports", {})
     coord = data.get("coordinates")
     if coord:
         device.coordinates = geopoint_from_dict(coord)

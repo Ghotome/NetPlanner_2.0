@@ -12,7 +12,7 @@ def main() -> int:
     app = QApplication(sys.argv)
     project = NetworkProject(id="default", name="Новий проєкт")
     window = MainWindow(project)
-    window.show()
+    window.showMaximized()
     return app.exec()
 
 

@@ -172,6 +172,13 @@
         marker.setIcon(markerIcon(status));
       }
 
+      function removeMarker(id) {
+        const marker = markers.get(id);
+        if (!marker) { return; }
+        map.removeLayer(marker);
+        markers.delete(id);
+      }
+
       function addCoverage(id, lat, lon, azimuth, beamwidth, rangeKm, color) {
         const polygon = buildCoveragePolygon(lat, lon, azimuth, beamwidth, rangeKm);
         if (!polygon) { return; }
@@ -368,6 +375,7 @@
       window.addMarker = addMarker;
       window.moveMarker = moveMarker;
       window.updateMarkerLabel = updateMarkerLabel;
+      window.removeMarker = removeMarker;
       window.setMarkerStatus = setMarkerStatus;
       window.addLink = addLink;
       window.updateLink = updateLink;

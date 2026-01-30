@@ -3,7 +3,7 @@ from __future__ import annotations
 from uuid import uuid4
 
 from PySide6.QtCore import QPointF, Qt, QTimer, QUrl
-from PySide6.QtGui import QBrush, QCursor, QDesktopServices, QPen
+from PySide6.QtGui import QBrush, QCursor, QDesktopServices, QIntValidator, QPen
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -141,12 +141,22 @@ class DeviceNodeItem(QGraphicsEllipseItem):
 
 
 class DeviceLinkItem(QGraphicsLineItem):
-    def __init__(self, a: DeviceNodeItem, b: DeviceNodeItem, side_a: str, side_b: str) -> None:
+    def __init__(
+        self,
+        a: DeviceNodeItem,
+        b: DeviceNodeItem,
+        side_a: str,
+        side_b: str,
+        link_id: str,
+        on_delete,
+    ) -> None:
         super().__init__()
         self._a = a
         self._b = b
         self._side_a = side_a
         self._side_b = side_b
+        self._link_id = link_id
+        self._on_delete = on_delete
         self.setPen(QPen(Qt.GlobalColor.darkGray, 2))
         self._label = QGraphicsTextItem(self)
         self.update_position()
@@ -166,6 +176,13 @@ class DeviceLinkItem(QGraphicsLineItem):
 
     def set_label(self, text: str) -> None:
         self._label.setPlainText(text)
+
+    def contextMenuEvent(self, event):  # noqa: N802
+        menu = QMenu()
+        delete_action = menu.addAction("Видалити лінк")
+        chosen = menu.exec(event.screenPos())
+        if chosen == delete_action:
+            self._on_delete(self._link_id)
 
 
 class NetworkView(QGraphicsView):
@@ -235,7 +252,7 @@ class SiteDevicesDialog(QDialog):
             a = self._node_items.get(link.device_a_id)
             b = self._node_items.get(link.device_b_id)
             if a and b:
-                item = DeviceLinkItem(a, b, link.port_a, link.port_b)
+                item = DeviceLinkItem(a, b, link.port_a, link.port_b, link.id, self._delete_device_link)
                 kind_value = link.link_type.value if hasattr(link.link_type, "value") else str(link.link_type)
                 item.set_label(self._link_label(kind_value))
                 self._scene.addItem(item)
@@ -279,6 +296,7 @@ class SiteDevicesDialog(QDialog):
         status_down = menu.addAction("Статус: DOWN")
         status_deg = menu.addAction("Статус: DEGRADED")
         toggle_uplink = menu.addAction("Перемкнути uplink")
+        delete_device = menu.addAction("Видалити пристрій")
         chosen = menu.exec(screen_pos)
         if chosen == open_web:
             self._open_webfig(item.device)
@@ -295,13 +313,27 @@ class SiteDevicesDialog(QDialog):
             item.device.metadata["manual_status"] = True
         elif chosen == toggle_uplink:
             item.device.is_uplink = not item.device.is_uplink
+        elif chosen == delete_device:
+            if self._confirm_action("Підтвердження", f"Видалити пристрій '{item.device.name}'?"):
+                self._site.remove_device(item.device.id)
+        self._refresh_scene()
+
+    def _delete_device_link(self, link_id: str) -> None:
+        link = self._site.links.get(link_id)
+        if link is None:
+            return
+        if not self._confirm_action("Підтвердження", "Видалити лінк між пристроями?"):
+            return
+        self._site.links.pop(link_id, None)
         self._refresh_scene()
 
     def _open_webfig(self, device: Device) -> None:
         if not device.ip_address:
             QMessageBox.information(self, "WebFig", "У пристрою немає IP адреси.")
             return
-        port = (device.port or "").strip()
+        port = device.ports.get("web") if device.ports else None
+        if port is None:
+            port = (device.port or "").strip()
         host = device.ip_address
         if port:
             host = f"{host}:{port}"
@@ -313,15 +345,24 @@ class SiteDevicesDialog(QDialog):
             QMessageBox.information(self, "SSH", "У пристрою немає IP адреси.")
             return
         ip = device.ip_address
+        port = device.ports.get("ssh") if device.ports else None
         try:
             if sys.platform.startswith("win"):
-                subprocess.Popen(["cmd", "/c", "start", "ssh", ip])
+                if port:
+                    subprocess.Popen(["cmd", "/c", "start", "ssh", "-p", str(port), ip])
+                else:
+                    subprocess.Popen(["cmd", "/c", "start", "ssh", ip])
             elif sys.platform == "darwin":
-                subprocess.Popen(
-                    ["osascript", "-e", f'tell application "Terminal" to do script "ssh {ip}"']
-                )
+                if port:
+                    cmd = f"ssh -p {port} {ip}"
+                else:
+                    cmd = f"ssh {ip}"
+                subprocess.Popen(["osascript", "-e", f'tell application "Terminal" to do script "{cmd}"'])
             else:
-                subprocess.Popen(["x-terminal-emulator", "-e", "ssh", ip])
+                if port:
+                    subprocess.Popen(["x-terminal-emulator", "-e", "ssh", "-p", str(port), ip])
+                else:
+                    subprocess.Popen(["x-terminal-emulator", "-e", "ssh", ip])
         except Exception:
             QMessageBox.information(self, "SSH", "Не вдалося відкрити SSH клієнт.")
 
@@ -412,7 +453,7 @@ class DeviceFormDialog(QDialog):
         for label, dtype in device_options:
             self._type.addItem(label, dtype)
         self._ip = QLineEdit(self)
-        self._port = QLineEdit(self)
+        self._port_rows = []
         self._notes = QTextEdit(self)
 
         self._pos_label = QLabel(f"{pos_x:.1f}, {pos_y:.1f}", self)
@@ -426,8 +467,12 @@ class DeviceFormDialog(QDialog):
         form.addWidget(self._type)
         form.addWidget(QLabel("IP"))
         form.addWidget(self._ip)
-        form.addWidget(QLabel("Порт"))
-        form.addWidget(self._port)
+        form.addWidget(QLabel("Порти"))
+        self._ports_container = QVBoxLayout()
+        self._add_port_btn = QPushButton("Додати порт", self)
+        self._add_port_btn.clicked.connect(self._add_port_row)
+        form.addLayout(self._ports_container)
+        form.addWidget(self._add_port_btn)
         form.addWidget(QLabel("Позиція (x, y)"))
         form.addWidget(self._pos_label)
         form.addWidget(QLabel("Нотатки"))
@@ -447,16 +492,73 @@ class DeviceFormDialog(QDialog):
         layout.addLayout(actions)
         self.setLayout(layout)
 
+    def _add_port_row(self) -> None:
+        types = self._available_port_types()
+        if not types:
+            QMessageBox.information(self, "Порти", "Всі типи портів уже додані.")
+            return
+        row = QHBoxLayout()
+        type_box = QComboBox(self)
+        for value, label in types:
+            type_box.addItem(label, value)
+        value_edit = QLineEdit(self)
+        value_edit.setValidator(QIntValidator(1, 65535, self))
+        remove_btn = QPushButton("✕", self)
+        remove_btn.setFixedWidth(28)
+
+        def remove_row():
+            self._ports_container.removeItem(row)
+            for widget in (type_box, value_edit, remove_btn):
+                widget.deleteLater()
+            self._port_rows[:] = [r for r in self._port_rows if r[0] is not type_box]
+
+        remove_btn.clicked.connect(remove_row)
+        row.addWidget(type_box)
+        row.addWidget(value_edit)
+        row.addWidget(remove_btn)
+        self._ports_container.addLayout(row)
+        self._port_rows.append((type_box, value_edit))
+
+    def _available_port_types(self) -> list[tuple[str, str]]:
+        used = {box.currentData() for box, _ in self._port_rows}
+        options = [("web", "Web"), ("ssh", "SSH"), ("snmp", "SNMP")]
+        return [(value, label) for value, label in options if value not in used]
+
+    def accept(self) -> None:
+        types = [box.currentData() for box, _ in self._port_rows]
+        if len(types) != len(set(types)):
+            QMessageBox.warning(self, "Порти", "Кожен тип порту може бути лише один раз.")
+            return
+        for _, value in self._port_rows:
+            text = value.text().strip()
+            if not text:
+                continue
+            try:
+                port = int(text)
+            except ValueError:
+                QMessageBox.warning(self, "Порти", "Порт має бути числом.")
+                return
+            if not (1 <= port <= 65535):
+                QMessageBox.warning(self, "Порти", "Порт має бути в межах 1–65535.")
+                return
+        super().accept()
+
     def to_device(self) -> Device:
         name = self._name.text().strip() or "Пристрій"
         dtype = self._type.currentData()
         notes = self._notes.toPlainText().strip() or None
+        ports = {}
+        for box, value in self._port_rows:
+            text = value.text().strip()
+            if not text:
+                continue
+            ports[box.currentData()] = int(text)
         return Device(
             id=uuid4().hex[:8],
             name=name,
             device_type=dtype,
             ip_address=self._ip.text().strip() or None,
-            port=self._port.text().strip() or None,
+            ports=ports,
             position=(self._pos_x, self._pos_y),
             notes_text=notes,
         )

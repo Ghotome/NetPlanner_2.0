@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QTextEdit,
     QVBoxLayout,
 )
 
@@ -38,6 +39,8 @@ class SiteLinkDialog(QDialog):
         self._ssid = QLineEdit(self)
         self._password = QLineEdit(self)
         self._password.setEchoMode(QLineEdit.EchoMode.Normal)
+        self._name = QLineEdit(self)
+        self._notes = QTextEdit(self)
 
         self._link_type = QComboBox(self)
         link_options = [
@@ -63,6 +66,8 @@ class SiteLinkDialog(QDialog):
         self._label_cable = QLabel("Тип кабелю")
 
         form = QVBoxLayout()
+        form.addWidget(QLabel("Назва лінка"))
+        form.addWidget(self._name)
         form.addWidget(QLabel("Тип лінка"))
         form.addWidget(self._kind)
         form.addWidget(self._label_frequency)
@@ -75,6 +80,8 @@ class SiteLinkDialog(QDialog):
         form.addWidget(self._link_type)
         form.addWidget(self._label_cable)
         form.addWidget(self._cable_type)
+        form.addWidget(QLabel("Нотатки"))
+        form.addWidget(self._notes)
 
         actions = QHBoxLayout()
         save_btn = QPushButton("Зберегти", self)
@@ -94,6 +101,9 @@ class SiteLinkDialog(QDialog):
     def link_kind(self) -> LinkKind:
         return self._kind.currentData()
 
+    def link_name(self) -> str:
+        return self._name.text().strip()
+
     def link_label(self) -> str:
         return self._kind.currentText()
 
@@ -112,6 +122,9 @@ class SiteLinkDialog(QDialog):
 
     def password(self) -> str | None:
         return self._password.text().strip() or None
+
+    def notes_text(self) -> str | None:
+        return self._notes.toPlainText().strip() or None
 
     def ethernet_link_type(self) -> LinkType | None:
         return self._link_type.currentData()

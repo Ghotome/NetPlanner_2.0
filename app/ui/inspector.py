@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Signal, QLocale
+import math
+
+from PySide6.QtCore import Signal, QLocale, QSignalBlocker
 from PySide6.QtGui import QDoubleValidator
 from PySide6.QtWidgets import (
     QComboBox,
@@ -13,6 +15,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.coverage import CoverageCalculator
 from app.domain import CableType, Link, LinkKind, LinkType, Site, SiteKind
 
 
@@ -38,22 +41,127 @@ class InspectorPanel(QWidget):
         self._site_beamwidth = QLineEdit(self)
         self._site_gain = QLineEdit(self)
         self._site_height = QLineEdit(self)
+        self._site_frequency = QLineEdit(self)
+        self._site_tx_power = QLineEdit(self)
+        self._site_rx_gain = QLineEdit(self)
+        self._site_rx_sens = QLineEdit(self)
+        self._site_misc_losses = QLineEdit(self)
+        self._site_margin = QLineEdit(self)
+        self._site_mcs = QComboBox(self)
+        self._calc_distance = QLineEdit(self)
+        self._calc_fspl = QLineEdit(self)
+        self._calc_required_eirp = QLineEdit(self)
+        self._calc_eirp_ok = QLineEdit(self)
         self._site_azimuth.setValidator(QDoubleValidator(0.0, 360.0, 1, self))
         self._site_beamwidth.setValidator(QDoubleValidator(0.0, 360.0, 1, self))
         self._site_gain.setValidator(QDoubleValidator(0.0, 60.0, 1, self))
         self._site_height.setValidator(QDoubleValidator(0.0, 200.0, 2, self))
+        freq_validator = QDoubleValidator(0.0, 100.0, 6, self)
+        freq_validator.setLocale(QLocale.c())
+        self._site_frequency.setValidator(freq_validator)
+        power_validator = QDoubleValidator(-60.0, 60.0, 2, self)
+        power_validator.setLocale(QLocale.c())
+        self._site_tx_power.setValidator(power_validator)
+        gain_validator = QDoubleValidator(0.0, 60.0, 1, self)
+        gain_validator.setLocale(QLocale.c())
+        self._site_rx_gain.setValidator(gain_validator)
+        sens_validator = QDoubleValidator(-150.0, -30.0, 2, self)
+        sens_validator.setLocale(QLocale.c())
+        self._site_rx_sens.setValidator(sens_validator)
+        loss_validator = QDoubleValidator(0.0, 60.0, 2, self)
+        loss_validator.setLocale(QLocale.c())
+        self._site_misc_losses.setValidator(loss_validator)
+        margin_validator = QDoubleValidator(0.0, 40.0, 2, self)
+        margin_validator.setLocale(QLocale.c())
+        self._site_margin.setValidator(margin_validator)
+        dist_validator = QDoubleValidator(0.1, 300.0, 2, self)
+        dist_validator.setLocale(QLocale.c())
+        self._calc_distance.setValidator(dist_validator)
+        self._calc_fspl.setReadOnly(True)
+        self._calc_required_eirp.setReadOnly(True)
+        self._calc_eirp_ok.setReadOnly(True)
         self._site_apply = QPushButton("Застосувати антену", self)
         self._site_apply.clicked.connect(self._apply_site_changes)
-        site_layout.addRow(QLabel("Назва:"), self._site_name)
-        site_layout.addRow(QLabel("Тип:"), self._site_type)
-        site_layout.addRow(QLabel("Координати:"), self._site_coords)
-        site_layout.addRow(QLabel("Висота:"), self._site_elevation)
-        site_layout.addRow(QLabel("Нотатки:"), self._site_notes)
-        site_layout.addRow(QLabel("Тип антени:"), self._site_antenna_type)
-        site_layout.addRow(QLabel("Азимут:"), self._site_azimuth)
-        site_layout.addRow(QLabel("Сектор (°):"), self._site_beamwidth)
-        site_layout.addRow(QLabel("Підсилення (dBi):"), self._site_gain)
-        site_layout.addRow(QLabel("Висота антени (м):"), self._site_height)
+        self._site_frequency.textChanged.connect(self._update_eirp_calculator)
+        self._calc_distance.textChanged.connect(self._update_eirp_calculator)
+        self._site_rx_sens.textChanged.connect(self._update_eirp_calculator)
+        self._site_rx_gain.textChanged.connect(self._update_eirp_calculator)
+        self._site_misc_losses.textChanged.connect(self._update_eirp_calculator)
+        self._site_margin.textChanged.connect(self._update_eirp_calculator)
+        for field in (
+            self._site_azimuth,
+            self._site_beamwidth,
+            self._site_gain,
+            self._site_height,
+            self._site_frequency,
+            self._site_tx_power,
+            self._site_rx_gain,
+            self._site_rx_sens,
+            self._site_misc_losses,
+            self._site_margin,
+            self._calc_distance,
+        ):
+            field.textChanged.connect(lambda _text, f=field: self._normalize_decimal(f))
+        label_name = QLabel("Назва:")
+        label_type = QLabel("Тип:")
+        label_coords = QLabel("Координати:")
+        label_elevation = QLabel("Висота:")
+        label_notes = QLabel("Нотатки:")
+        label_antenna = QLabel("Тип антени:")
+        label_azimuth = QLabel("Азимут:")
+        label_beamwidth = QLabel("Сектор (°):")
+        label_gain = QLabel("Підсилення (dBi):")
+        label_height = QLabel("Висота антени (м):")
+        label_frequency = QLabel("Частота (ГГц):")
+        label_tx_power = QLabel("Потужність TX (dBm):")
+        label_rx_gain = QLabel("Підсилення RX (dBi):")
+        label_rx_sens = QLabel("Чутливість RX (dBm):")
+        label_losses = QLabel("Втрати (дБ):")
+        label_margin = QLabel("Margin (дБ):")
+        label_mcs = QLabel("MCS:")
+        label_calc_distance = QLabel("Дистанція (км):")
+        label_calc_fspl = QLabel("Втрати FSPL (дБ):")
+        label_calc_ok = QLabel("EIRP OK:")
+
+        label_rx_sens.setToolTip("Параметр береться зі специфікації пристрою (RX sensitivity).")
+        label_rx_gain.setToolTip("Підсилення приймальної антени зі специфікації.")
+        label_losses.setToolTip("Втрати на АФТ: кабель, конектори, грозозахист, роз'єми.")
+        label_margin.setToolTip(
+            "Запас лінку (fade margin) на завади/погоду/деградацію.\n"
+            "Зазвичай 5–15 дБ."
+        )
+        label_mcs.setToolTip(
+            "Обери MCS зі специфікації. Чутливість RX залежить від MCS.\n"
+            "Після вибору внеси RX sensitivity зі специфікації."
+        )
+        label_calc_distance.setToolTip("Введи відому дистанцію для оцінки втрат у вільному просторі.")
+        label_calc_fspl.setToolTip("FSPL = 92.45 + 20·log10(d_km) + 20·log10(f_GHz)")
+        label_calc_ok.setToolTip("Наведи курсор, щоб побачити фактичне/потрібне EIRP.")
+
+        self._site_mcs.addItem("Auto", None)
+        for idx in range(0, 13):
+            self._site_mcs.addItem(f"MCS {idx}", f"mcs{idx}")
+
+        site_layout.addRow(label_name, self._site_name)
+        site_layout.addRow(label_type, self._site_type)
+        site_layout.addRow(label_coords, self._site_coords)
+        site_layout.addRow(label_elevation, self._site_elevation)
+        site_layout.addRow(label_notes, self._site_notes)
+        site_layout.addRow(label_antenna, self._site_antenna_type)
+        site_layout.addRow(label_azimuth, self._site_azimuth)
+        site_layout.addRow(label_beamwidth, self._site_beamwidth)
+        site_layout.addRow(label_gain, self._site_gain)
+        site_layout.addRow(label_height, self._site_height)
+        site_layout.addRow(label_frequency, self._site_frequency)
+        site_layout.addRow(label_tx_power, self._site_tx_power)
+        site_layout.addRow(label_mcs, self._site_mcs)
+        site_layout.addRow(label_rx_gain, self._site_rx_gain)
+        site_layout.addRow(label_rx_sens, self._site_rx_sens)
+        site_layout.addRow(label_losses, self._site_misc_losses)
+        site_layout.addRow(label_margin, self._site_margin)
+        site_layout.addRow(label_calc_distance, self._calc_distance)
+        site_layout.addRow(label_calc_fspl, self._calc_fspl)
+        site_layout.addRow(label_calc_ok, self._calc_eirp_ok)
         site_layout.addRow(self._site_apply)
 
         self._link_group = QWidget(self)
@@ -117,6 +225,9 @@ class InspectorPanel(QWidget):
             self._site_coords.setText("—")
             self._site_elevation.setText("—")
             self._site_notes.setText("—")
+            self._calc_distance.setText("")
+            self._calc_fspl.setText("")
+            self._calc_required_eirp.setText("")
             self._site_group.setVisible(True)
             self._link_group.setVisible(False)
             self._current_link_id = None
@@ -137,6 +248,20 @@ class InspectorPanel(QWidget):
         self._site_beamwidth.setText("" if antenna.beamwidth_deg is None else str(antenna.beamwidth_deg))
         self._site_gain.setText("" if antenna.gain_dbi is None else str(antenna.gain_dbi))
         self._site_height.setText("" if antenna.height_m is None else str(antenna.height_m))
+        self._site_frequency.setText("" if antenna.frequency_ghz is None else str(antenna.frequency_ghz))
+        self._site_tx_power.setText("" if antenna.tx_power_dbm is None else str(antenna.tx_power_dbm))
+        self._site_rx_gain.setText("" if antenna.rx_gain_dbi is None else str(antenna.rx_gain_dbi))
+        if antenna.mcs:
+            idx = self._site_mcs.findData(antenna.mcs)
+            if idx >= 0:
+                self._site_mcs.setCurrentIndex(idx)
+        else:
+            self._site_mcs.setCurrentIndex(0)
+        rx_sens = CoverageCalculator.rx_sensitivity_dbm(antenna)
+        self._site_rx_sens.setText("" if rx_sens is None else f"{rx_sens:.2f}")
+        self._site_misc_losses.setText("" if antenna.misc_losses_db is None else str(antenna.misc_losses_db))
+        self._site_margin.setText("" if antenna.link_margin_db is None else str(antenna.link_margin_db))
+        self._update_eirp_calculator()
         self._site_group.setVisible(True)
         self._link_group.setVisible(False)
         self._current_link_id = None
@@ -249,5 +374,73 @@ class InspectorPanel(QWidget):
             "beamwidth_deg": float(self._site_beamwidth.text()) if self._site_beamwidth.text().strip() else None,
             "gain_dbi": float(self._site_gain.text()) if self._site_gain.text().strip() else None,
             "height_m": float(self._site_height.text()) if self._site_height.text().strip() else None,
+            "frequency_ghz": float(self._site_frequency.text()) if self._site_frequency.text().strip() else None,
+            "tx_power_dbm": float(self._site_tx_power.text()) if self._site_tx_power.text().strip() else None,
+            "mcs": self._site_mcs.currentData(),
+            "rx_gain_dbi": float(self._site_rx_gain.text()) if self._site_rx_gain.text().strip() else None,
+            "rx_sensitivity_dbm": float(self._site_rx_sens.text()) if self._site_rx_sens.text().strip() else None,
+            "misc_losses_db": float(self._site_misc_losses.text()) if self._site_misc_losses.text().strip() else None,
+            "link_margin_db": float(self._site_margin.text()) if self._site_margin.text().strip() else None,
         }
         self.site_updated.emit(self._current_site_id, payload)
+
+    def _update_eirp_calculator(self) -> None:
+        freq_text = self._site_frequency.text().strip()
+        dist_text = self._calc_distance.text().strip()
+        rx_sens_text = self._site_rx_sens.text().strip()
+        rx_gain_text = self._site_rx_gain.text().strip()
+        losses_text = self._site_misc_losses.text().strip()
+        margin_text = self._site_margin.text().strip()
+        try:
+            freq = float(freq_text) if freq_text else None
+            dist = float(dist_text) if dist_text else None
+            rx_sens = float(rx_sens_text) if rx_sens_text else None
+            rx_gain = float(rx_gain_text) if rx_gain_text else 0.0
+            losses = float(losses_text) if losses_text else 0.0
+            margin = float(margin_text) if margin_text else 0.0
+        except ValueError:
+            self._calc_fspl.setText("")
+            self._calc_required_eirp.setText("")
+            self._calc_eirp_ok.setText("")
+            self._calc_eirp_ok.setToolTip("")
+            return
+        if not freq or not dist or rx_sens is None:
+            self._calc_fspl.setText("")
+            self._calc_required_eirp.setText("")
+            self._calc_eirp_ok.setText("")
+            self._calc_eirp_ok.setToolTip("")
+            return
+        fspl = 92.45 + 20.0 * math.log10(dist) + 20.0 * math.log10(freq)
+        required_eirp = rx_sens + margin + fspl + losses - rx_gain
+        self._calc_fspl.setText(f"{fspl:.2f}")
+        self._calc_required_eirp.setText(f"{required_eirp:.2f}")
+        tx_gain_text = self._site_gain.text().strip()
+        tx_power_text = self._site_tx_power.text().strip()
+        try:
+            tx_gain = float(tx_gain_text) if tx_gain_text else 0.0
+            tx_power = float(tx_power_text) if tx_power_text else None
+        except ValueError:
+            tx_power = None
+        if tx_power is None:
+            self._calc_eirp_ok.setText("")
+            self._calc_eirp_ok.setToolTip("")
+            return
+        actual_eirp = tx_power + tx_gain - losses # type: ignore
+        ok = actual_eirp >= required_eirp
+        self._calc_eirp_ok.setText("Так" if ok else "Ні")
+        self._calc_eirp_ok.setToolTip(
+            f"EIRP_actual: {actual_eirp:.2f} dBm\nEIRP_required: {required_eirp:.2f} dBm"
+        )
+
+    @staticmethod
+    def _normalize_decimal(field: QLineEdit) -> None:
+        text = field.text()
+        if "," not in text:
+            return
+        new_text = text.replace(",", ".")
+        if new_text == text:
+            return
+        cursor_pos = field.cursorPosition()
+        with QSignalBlocker(field):
+            field.setText(new_text)
+        field.setCursorPosition(cursor_pos)

@@ -206,6 +206,13 @@ def antenna_to_dict(antenna: AntennaParams) -> dict[str, Any]:
         "altitude_m": antenna.altitude_m,
         "height_m": antenna.height_m,
         "gain_dbi": antenna.gain_dbi,
+        "frequency_ghz": antenna.frequency_ghz,
+        "tx_power_dbm": antenna.tx_power_dbm,
+        "rx_gain_dbi": antenna.rx_gain_dbi,
+        "rx_sensitivity_dbm": antenna.rx_sensitivity_dbm,
+        "misc_losses_db": antenna.misc_losses_db,
+        "link_margin_db": antenna.link_margin_db,
+        "mcs": antenna.mcs,
     }
 
 
@@ -217,6 +224,13 @@ def antenna_from_dict(data: dict[str, Any]) -> AntennaParams:
         altitude_m=data.get("altitude_m"),
         height_m=data.get("height_m"),
         gain_dbi=data.get("gain_dbi"),
+        frequency_ghz=data.get("frequency_ghz"),
+        tx_power_dbm=data.get("tx_power_dbm"),
+        rx_gain_dbi=data.get("rx_gain_dbi"),
+        rx_sensitivity_dbm=data.get("rx_sensitivity_dbm"),
+        misc_losses_db=data.get("misc_losses_db"),
+        link_margin_db=data.get("link_margin_db"),
+        mcs=data.get("mcs"),
     )
 
 

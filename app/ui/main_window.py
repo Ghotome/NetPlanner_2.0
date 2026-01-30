@@ -6,6 +6,7 @@ from uuid import uuid4
 
 from PySide6.QtCore import QPoint, Qt, QTimer
 from PySide6.QtWidgets import (
+    QApplication,
     QFileDialog,
     QInputDialog,
     QMainWindow,
@@ -17,6 +18,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtGui import QAction
 
+from app.coverage import CoverageCalculator
 from app.domain import GeoPoint, Link, LinkKind, NetworkProject, Site, SiteKind, StatusState
 from app.elevation import ElevationProvider
 from app.link_analyzer import LinkAnalyzer
@@ -65,6 +67,7 @@ class MainWindow(QMainWindow):
         self.monitoring_panel = MonitoringPanel(self)
         self._elevation = ElevationProvider()
         self._link_analyzer = LinkAnalyzer(self._elevation)
+        self._coverage_calc = CoverageCalculator()
         self._prefetch_timer = QTimer(self)
         self._prefetch_timer.setSingleShot(True)
         self._prefetch_timer.timeout.connect(self._prefetch_elevation_for_view)
@@ -251,6 +254,14 @@ class MainWindow(QMainWindow):
             site.antenna.azimuth_deg = 0.0
             site.antenna.beamwidth_deg = 120.0
             site.antenna.gain_dbi = 12.0
+        if site.antenna.frequency_ghz is None:
+            site.antenna.frequency_ghz = 5.8
+        if site.antenna.tx_power_dbm is None:
+            site.antenna.tx_power_dbm = 20.0
+        if site.antenna.misc_losses_db is None:
+            site.antenna.misc_losses_db = 4.0
+        if site.antenna.link_margin_db is None:
+            site.antenna.link_margin_db = 6.0
         self._project.add_site(site)
         self.project_tree.add_node(site.id, f"{site.name} ({site.kind.value})")
         self.map_view.add_marker(site.id, site.name, self._site_kind_label(site.kind.value), lat, lon)
@@ -391,7 +402,9 @@ class MainWindow(QMainWindow):
     def _prefetch_elevation_for_view(self) -> None:
         if self._pending_bounds is None or self._pending_zoom is None:
             return
+        self._set_busy("Завантаження висот…")
         self._elevation.prefetch_tiles(self._pending_bounds, self._pending_zoom)
+        self._set_busy(None)
 
     def _on_prefetch_elevation(
         self, south: float, west: float, north: float, east: float, zoom: int
@@ -500,6 +513,14 @@ class MainWindow(QMainWindow):
         site.antenna.beamwidth_deg = data.get("beamwidth_deg")
         site.antenna.gain_dbi = data.get("gain_dbi")
         site.antenna.height_m = data.get("height_m")
+        site.antenna.frequency_ghz = data.get("frequency_ghz")
+        site.antenna.tx_power_dbm = data.get("tx_power_dbm")
+        site.antenna.mcs = data.get("mcs")
+        site.antenna.rx_gain_dbi = data.get("rx_gain_dbi")
+        site.antenna.rx_sensitivity_dbm = data.get("rx_sensitivity_dbm")
+        site.antenna.misc_losses_db = data.get("misc_losses_db")
+        site.antenna.link_margin_db = data.get("link_margin_db")
+        self.inspector.show_site(site)
         self._update_site_coverage(site)
         for link in self._project.links.values():
             if link.site_a_id == site.id or link.site_b_id == site.id:
@@ -577,21 +598,31 @@ class MainWindow(QMainWindow):
         return r * c
 
     def _update_site_coverage(self, site: Site) -> None:
+        self._set_busy("Розрахунок покриття…")
         antenna = site.antenna
         if antenna is None or antenna.beamwidth_deg is None or antenna.gain_dbi is None:
             self.map_view.remove_coverage(site.id)
+            self._set_busy(None)
             return
         beamwidth = antenna.beamwidth_deg
         azimuth = antenna.azimuth_deg or 0.0
         if antenna.antenna_type == "omni":
             beamwidth = 360.0
-        range_km = max(0.2, (antenna.gain_dbi or 0) * 0.2)
+        site_elevation = None
+        if self._elevation.available:
+            site_elevation = self._elevation.get_elevation(site.location.lat, site.location.lon)
+        coverage = self._coverage_calc.estimate_range_km(
+            antenna,
+            site_elevation_m=site_elevation,
+            beamwidth_deg=beamwidth,
+        )
+        range_km = coverage.range_km
         color = self._coverage_color(antenna.antenna_type)
         tooltip = (
             f"{site.name} | Азимут: {azimuth}° | Сектор: {beamwidth}° | "
             f"Gain: {antenna.gain_dbi or '-'} dBi"
         )
-        points = self._coverage_points_with_dem(site, azimuth, beamwidth, range_km)
+        points = self._coverage_points_with_dem(site, azimuth, beamwidth, range_km, site_elevation)
         if points:
             self.map_view.update_coverage_points(site.id, points, color, tooltip)
         else:
@@ -605,6 +636,7 @@ class MainWindow(QMainWindow):
                 color,
                 tooltip,
             )
+        self._set_busy(None)
 
     def _cleanup_on_close(self) -> None:
         if self._dirty:
@@ -802,29 +834,92 @@ class MainWindow(QMainWindow):
             "directional": "#f97316",
         }.get(antenna_type or "", "#22c55e")
 
+    def _set_busy(self, message: str | None) -> None:
+        if message:
+            self.statusBar().showMessage(message)
+            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        else:
+            self.statusBar().clearMessage()
+            QApplication.restoreOverrideCursor()
+
     def _coverage_points_with_dem(
-        self, site: Site, azimuth: float, beamwidth: float, range_km: float
+        self,
+        site: Site,
+        azimuth: float,
+        beamwidth: float,
+        range_km: float,
+        site_elevation: float | None = None,
     ) -> list | None:
         if not self._elevation.available:
             return None
-        elevation = self._elevation.get_elevation(site.location.lat, site.location.lon)
+        elevation = site_elevation
+        if elevation is None:
+            elevation = self._elevation.get_elevation(site.location.lat, site.location.lon)
         if elevation is None:
             return None
         base_height = elevation + (site.antenna.height_m or 0)
-        step_km = max(0.2, range_km / 12)
+        rx_height_m = 2.0
+        fresnel_factor = 0.6
+        freq_ghz = site.antenna.frequency_ghz
+        step_km = max(0.1, range_km / 24)
         points = [[site.location.lat, site.location.lon]]
         start = azimuth - beamwidth / 2
         end = azimuth + beamwidth / 2
-        for angle in range(int(start), int(end) + 1, max(1, int(beamwidth / 20))):
-            last_lat = site.location.lat
-            last_lon = site.location.lon
+        prev_dist_km: float | None = None
+        max_jump_km = max(0.5, range_km / 30)
+        for angle in range(int(start), int(end) + 1, max(1, int(beamwidth / 40))):
+            samples: list[tuple[float, float | None, float, float]] = []
             for dist in self._frange(step_km, range_km, step_km):
                 lat, lon = self._destination_point(site.location.lat, site.location.lon, angle, dist)
                 elev = self._elevation.get_elevation(lat, lon)
-                if elev is not None and elev > base_height:
+                samples.append((dist, elev, lat, lon))
+
+            last_ok = None
+            for idx, (dist, elev, lat, lon) in enumerate(samples):
+                if dist <= 0:
+                    last_ok = (lat, lon)
+                    continue
+                if elev is None:
                     break
-                last_lat, last_lon = lat, lon
-            points.append([last_lat, last_lon])
+                target_height = elev + rx_height_m
+                los_ok = True
+                for j in range(idx):
+                    d1, elev_j, _, _ = samples[j]
+                    if elev_j is None:
+                        continue
+                    d2 = dist - d1
+                    if d2 <= 0:
+                        continue
+                    los_height = base_height + (target_height - base_height) * (d1 / dist)
+                    clearance = 0.0
+                    if freq_ghz and freq_ghz > 0:
+                        r1 = 17.32 * ((d1 * d2) / (freq_ghz * dist)) ** 0.5
+                        clearance = fresnel_factor * r1
+                    if elev_j > (los_height - clearance):
+                        los_ok = False
+                        break
+                if not los_ok:
+                    break
+                last_ok = (lat, lon)
+
+            if last_ok is None:
+                points.append([site.location.lat, site.location.lon])
+            else:
+                dist_km = self._distance_km(
+                    site.location.lat,
+                    site.location.lon,
+                    last_ok[0],
+                    last_ok[1],
+                )
+                if prev_dist_km is not None and dist_km > prev_dist_km + max_jump_km:
+                    dist_km = prev_dist_km + max_jump_km
+                    lat, lon = self._destination_point(
+                        site.location.lat, site.location.lon, angle, dist_km
+                    )
+                    points.append([lat, lon])
+                else:
+                    points.append([last_ok[0], last_ok[1]])
+                prev_dist_km = dist_km
         points.append([site.location.lat, site.location.lon])
         return points
 

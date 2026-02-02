@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-from math import asin, atan2, cos, radians, sin, sqrt
+from math import asin, atan2, cos, log10, radians, sin, sqrt
 from uuid import uuid4
 
 from PySide6.QtCore import QPoint, Qt, QTimer
@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from PySide6.QtGui import QAction
+from PySide6.QtGui import QAction, QPalette
 
 from app.coverage import CoverageCalculator
 from app.domain import GeoPoint, Link, LinkKind, NetworkProject, Site, SiteKind, StatusState
@@ -223,16 +223,38 @@ class MainWindow(QMainWindow):
         help_menu.addAction("Про програму", self._about)
 
     def _apply_styles(self) -> None:
+        palette = QApplication.palette()
+        window = palette.color(QPalette.Window).name()
+        base = palette.color(QPalette.Base).name()
+        text = palette.color(QPalette.Text).name()
+        button = palette.color(QPalette.Button).name()
+        button_text = palette.color(QPalette.ButtonText).name()
+        mid = palette.color(QPalette.Mid).name()
+        dark = palette.color(QPalette.Dark).name()
+        highlight = palette.color(QPalette.Highlight).name()
+        highlight_text = palette.color(QPalette.HighlightedText).name()
         self.setStyleSheet(
-            """
-            QMainWindow { background: #f6f7fb; }
-            QToolBar { background: rgba(255,255,255,0.85); border-bottom: 1px solid #e5e7eb; }
-            QSplitter::handle { background: #e5e7eb; }
-            QTreeWidget, QListWidget { background: rgba(255,255,255,0.9); border: 1px solid #e5e7eb; }
-            QLineEdit, QComboBox { background: #fff; border: 1px solid #e5e7eb; padding: 4px; border-radius: 4px; }
-            QPushButton { background: #f3f4f6; border: 1px solid #e5e7eb; padding: 6px 8px; border-radius: 6px; }
-            QPushButton:hover { background: #e5e7eb; }
-            QLabel { color: #111827; }
+            f"""
+            QMainWindow {{ background: {window}; }}
+            QToolBar {{ background: {window}; border-bottom: 1px solid {mid}; }}
+            QSplitter::handle {{ background: {mid}; }}
+            QTreeWidget, QListWidget {{ background: {base}; border: 1px solid {mid}; }}
+            QLineEdit, QComboBox {{ background: {base}; color: {text}; border: 1px solid {dark}; padding: 4px; border-radius: 4px; }}
+            QLineEdit:focus, QComboBox:focus {{ border: 1px solid {highlight}; }}
+            QPushButton {{ background: {button}; color: {button_text}; border: 1px solid {dark}; padding: 6px 10px; border-radius: 6px; font-weight: 600; }}
+            QPushButton:hover {{ background: {mid}; }}
+            QPushButton:pressed {{ background: {highlight}; color: {highlight_text}; }}
+            QLabel {{ color: {text}; }}
+            QComboBox QAbstractItemView {{
+                background: {base};
+                color: {text};
+                selection-background-color: {highlight};
+                selection-color: {highlight_text};
+                outline: 1px solid {mid};
+            }}
+            QComboBox QAbstractItemView::item:selected {{
+                border: 1px solid {highlight_text};
+            }}
             """
         )
 
@@ -694,19 +716,43 @@ class MainWindow(QMainWindow):
         site = self._project.sites.get(site_id)
         if site is None:
             return
-        site.antenna.antenna_type = data.get("antenna_type")
-        site.antenna.azimuth_deg = data.get("azimuth_deg")
-        site.antenna.beamwidth_deg = data.get("beamwidth_deg")
-        site.antenna.gain_dbi = data.get("gain_dbi")
-        site.antenna.height_m = data.get("height_m")
-        site.antenna.frequency_ghz = data.get("frequency_ghz")
-        site.antenna.tx_power_dbm = data.get("tx_power_dbm")
-        site.antenna.mcs = data.get("mcs")
-        site.antenna.rx_gain_dbi = data.get("rx_gain_dbi")
-        site.antenna.rx_height_m = data.get("rx_height_m")
-        site.antenna.rx_sensitivity_dbm = data.get("rx_sensitivity_dbm")
-        site.antenna.misc_losses_db = data.get("misc_losses_db")
-        site.antenna.link_margin_db = data.get("link_margin_db")
+        if "name" in data and data["name"]:
+            site.name = data["name"]
+        if "kind" in data and data["kind"] is not None:
+            site.kind = data["kind"]
+        lat = data.get("lat")
+        lon = data.get("lon")
+        if lat is not None and lon is not None:
+            site.location = GeoPoint(lat=lat, lon=lon, altitude_m=site.location.altitude_m)
+        if "antenna_type" in data:
+            site.antenna.antenna_type = data.get("antenna_type")
+        if "azimuth_deg" in data:
+            site.antenna.azimuth_deg = data.get("azimuth_deg")
+        if "beamwidth_deg" in data:
+            site.antenna.beamwidth_deg = data.get("beamwidth_deg")
+        if "gain_dbi" in data:
+            site.antenna.gain_dbi = data.get("gain_dbi")
+        if "height_m" in data:
+            site.antenna.height_m = data.get("height_m")
+        if "frequency_ghz" in data:
+            site.antenna.frequency_ghz = data.get("frequency_ghz")
+        if "tx_power_dbm" in data:
+            site.antenna.tx_power_dbm = data.get("tx_power_dbm")
+        if "mcs" in data:
+            site.antenna.mcs = data.get("mcs")
+        if "rx_gain_dbi" in data:
+            site.antenna.rx_gain_dbi = data.get("rx_gain_dbi")
+        if "rx_height_m" in data:
+            site.antenna.rx_height_m = data.get("rx_height_m")
+        if "rx_sensitivity_dbm" in data:
+            site.antenna.rx_sensitivity_dbm = data.get("rx_sensitivity_dbm")
+        if "misc_losses_db" in data:
+            site.antenna.misc_losses_db = data.get("misc_losses_db")
+        if "link_margin_db" in data:
+            site.antenna.link_margin_db = data.get("link_margin_db")
+        kind_value = site.kind.value if hasattr(site.kind, "value") else str(site.kind)
+        self.map_view.update_marker_label(site.id, site.name, self._site_kind_label(kind_value))
+        self.map_view.move_marker(site.id, site.location.lat, site.location.lon)
         self.inspector.show_site(site)
         self._update_site_coverage(site)
         for link in self._project.links.values():
@@ -714,6 +760,12 @@ class MainWindow(QMainWindow):
                 site_a = self._project.sites.get(link.site_a_id)
                 site_b = self._project.sites.get(link.site_b_id)
                 if site_a and site_b:
+                    link.distance_km = self._distance_km(
+                        site_a.location.lat,
+                        site_a.location.lon,
+                        site_b.location.lat,
+                        site_b.location.lon,
+                    )
                     self.map_view.update_link_meta(
                         link.id,
                         self._link_label(link.kind),
@@ -721,6 +773,14 @@ class MainWindow(QMainWindow):
                         self._link_info(link, site_a),
                         link.distance_km,
                     )
+                    self.map_view.update_link(
+                        link.id,
+                        site_a.location.lat,
+                        site_a.location.lon,
+                        site_b.location.lat,
+                        site_b.location.lon,
+                    )
+        self.project_tree.set_project(self._project)
         self._dirty = True
 
     def _on_link_analyze_requested(self, link_id: str) -> None:
@@ -812,20 +872,24 @@ class MainWindow(QMainWindow):
             f"{site.name} | Азимут: {azimuth}° | Сектор: {beamwidth}° | "
             f"Gain: {antenna.gain_dbi or '-'} dBi"
         )
-        points = self._coverage_points_with_dem(site, azimuth, beamwidth, range_km, site_elevation)
-        if points:
-            self.map_view.update_coverage_points(site.id, points, color, tooltip)
+        bands = self._coverage_gradient_bands(site, azimuth, beamwidth, range_km, site_elevation)
+        if bands:
+            self.map_view.update_coverage_bands(site.id, bands, tooltip)
         else:
-            self.map_view.update_coverage(
-                site.id,
-                site.location.lat,
-                site.location.lon,
-                azimuth,
-                beamwidth,
-                range_km,
-                color,
-                tooltip,
-            )
+            points = self._coverage_points_with_dem(site, azimuth, beamwidth, range_km, site_elevation)
+            if points:
+                self.map_view.update_coverage_points(site.id, points, color, tooltip)
+            else:
+                self.map_view.update_coverage(
+                    site.id,
+                    site.location.lat,
+                    site.location.lon,
+                    azimuth,
+                    beamwidth,
+                    range_km,
+                    color,
+                    tooltip,
+                )
         self._set_busy(None)
 
     def _cleanup_on_close(self) -> None:
@@ -1053,6 +1117,79 @@ class MainWindow(QMainWindow):
         range_km: float,
         site_elevation: float | None = None,
     ) -> list | None:
+        distances = self._coverage_los_distances(site, azimuth, beamwidth, range_km, site_elevation)
+        if not distances:
+            return None
+        return self._coverage_points_from_distances(site, distances, range_km)
+
+    def _coverage_gradient_bands(
+        self,
+        site: Site,
+        azimuth: float,
+        beamwidth: float,
+        range_km: float,
+        site_elevation: float | None = None,
+    ) -> list | None:
+        antenna = site.antenna
+        freq_ghz = antenna.frequency_ghz
+        if freq_ghz is None or freq_ghz <= 0:
+            return None
+        tx_power = antenna.tx_power_dbm
+        rx_sens = antenna.rx_sensitivity_dbm
+        if tx_power is None or rx_sens is None:
+            return None
+        tx_gain = antenna.gain_dbi or 0.0
+        rx_gain = antenna.rx_gain_dbi or 0.0
+        losses = antenna.misc_losses_db or 0.0
+        margin = antenna.link_margin_db or 0.0
+        actual_eirp = tx_power + tx_gain - losses
+        required_base = rx_sens + margin + losses - rx_gain
+
+        def range_for_delta(delta_db: float) -> float | None:
+            fspl_max = actual_eirp - required_base - delta_db
+            if fspl_max <= 0:
+                return None
+            term = (fspl_max - 92.45 - (20.0 * log10(freq_ghz))) / 20.0
+            return 10 ** term
+
+        green_range = range_for_delta(15.0)
+        yellow_range = range_for_delta(5.0)
+        red_range = range_for_delta(-10.0)
+        if green_range is None or yellow_range is None or red_range is None:
+            return None
+
+        max_range = red_range
+        if self._coverage_calc.max_range_km is not None:
+            max_range = min(max_range, self._coverage_calc.max_range_km)
+        max_range = max(max_range, self._coverage_calc.min_range_km)
+        green_range = max(min(green_range, max_range), self._coverage_calc.min_range_km)
+        yellow_range = max(min(yellow_range, max_range), self._coverage_calc.min_range_km)
+        red_range = max(min(red_range, max_range), self._coverage_calc.min_range_km)
+
+        distances = self._coverage_los_distances(site, azimuth, beamwidth, max_range, site_elevation)
+        if not distances:
+            return None
+
+        bands = []
+        red_points = self._coverage_points_from_distances(site, distances, red_range)
+        yellow_points = self._coverage_points_from_distances(site, distances, yellow_range)
+        green_points = self._coverage_points_from_distances(site, distances, green_range)
+        if red_points:
+            bands.append({"color": "#ef4444", "latlngs": red_points})
+        if yellow_points:
+            bands.append({"color": "#f59e0b", "latlngs": yellow_points})
+        if green_points:
+            bands.append({"color": "#22c55e", "latlngs": green_points})
+        return bands if bands else None
+
+    def _coverage_los_distances(
+        self,
+        site: Site,
+        azimuth: float,
+        beamwidth: float,
+        range_km: float,
+        site_elevation: float | None = None,
+    ) -> list[tuple[int, float]] | None:
         if not self._elevation.available:
             return None
         elevation = site_elevation
@@ -1066,13 +1203,13 @@ class MainWindow(QMainWindow):
             rx_height_m = 2.0
         fresnel_factor = 0.6
         freq_ghz = site.antenna.frequency_ghz
-        step_km = max(0.1, range_km / 24)
-        points = [[site.location.lat, site.location.lon]]
+        step_km = max(0.2, range_km / 12)
+        distances: list[tuple[int, float]] = []
         start = azimuth - beamwidth / 2
         end = azimuth + beamwidth / 2
         prev_dist_km: float | None = None
         max_jump_km = max(0.5, range_km / 30)
-        for angle in range(int(start), int(end) + 1, max(1, int(beamwidth / 40))):
+        for angle in range(int(start), int(end) + 1, max(2, int(beamwidth / 20))):
             samples: list[tuple[float, float | None, float, float]] = []
             for dist in self._frange(step_km, range_km, step_km):
                 lat, lon = self._destination_point(site.location.lat, site.location.lon, angle, dist)
@@ -1107,9 +1244,8 @@ class MainWindow(QMainWindow):
                     break
                 last_ok = (lat, lon)
 
-            if last_ok is None:
-                points.append([site.location.lat, site.location.lon])
-            else:
+            dist_km = 0.0
+            if last_ok is not None:
                 dist_km = self._distance_km(
                     site.location.lat,
                     site.location.lon,
@@ -1118,13 +1254,29 @@ class MainWindow(QMainWindow):
                 )
                 if prev_dist_km is not None and dist_km > prev_dist_km + max_jump_km:
                     dist_km = prev_dist_km + max_jump_km
-                    lat, lon = self._destination_point(
-                        site.location.lat, site.location.lon, angle, dist_km
-                    )
-                    points.append([lat, lon])
-                else:
-                    points.append([last_ok[0], last_ok[1]])
-                prev_dist_km = dist_km
+            prev_dist_km = dist_km
+            distances.append((angle, dist_km))
+        return distances
+
+    def _coverage_points_from_distances(
+        self,
+        site: Site,
+        distances: list[tuple[int, float]],
+        range_km: float,
+    ) -> list:
+        points = [[site.location.lat, site.location.lon]]
+        prev_dist_km: float | None = None
+        max_jump_km = max(0.5, range_km / 30)
+        for angle, dist_km in distances:
+            dist = min(range_km, dist_km)
+            if prev_dist_km is not None and dist > prev_dist_km + max_jump_km:
+                dist = prev_dist_km + max_jump_km
+            if dist <= 0:
+                points.append([site.location.lat, site.location.lon])
+            else:
+                lat, lon = self._destination_point(site.location.lat, site.location.lon, angle, dist)
+                points.append([lat, lon])
+            prev_dist_km = dist
         points.append([site.location.lat, site.location.lon])
         return points
 

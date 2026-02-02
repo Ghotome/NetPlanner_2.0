@@ -30,9 +30,14 @@ class InspectorPanel(QWidget):
 
         self._site_group = QWidget(self)
         site_layout = QFormLayout(self._site_group)
-        self._site_name = QLabel("—")
-        self._site_type = QLabel("—")
-        self._site_coords = QLabel("—")
+        self._site_name = QLineEdit(self)
+        self._site_name.setReadOnly(True)
+        self._site_type = QComboBox(self)
+        self._site_type.addItem("CORE", SiteKind.CORE)
+        self._site_type.addItem("POP", SiteKind.POP)
+        self._site_type.addItem("CPE", SiteKind.CPE)
+        self._site_lat = QLineEdit(self)
+        self._site_lon = QLineEdit(self)
         self._site_elevation = QLabel("—")
         self._site_notes = QLabel("—")
         self._site_antenna_type = QComboBox(self)
@@ -57,7 +62,9 @@ class InspectorPanel(QWidget):
         self._site_beamwidth.setValidator(QDoubleValidator(0.0, 360.0, 1, self))
         self._site_gain.setValidator(QDoubleValidator(0.0, 60.0, 1, self))
         self._site_height.setValidator(QDoubleValidator(0.0, 200.0, 2, self))
-        freq_validator = QDoubleValidator(0.0, 100.0, 6, self)
+        self._site_lat.setValidator(QDoubleValidator(-90.0, 90.0, 6, self))
+        self._site_lon.setValidator(QDoubleValidator(-180.0, 180.0, 6, self))
+        freq_validator = QDoubleValidator(1.0, 100000.0, 3, self)
         freq_validator.setLocale(QLocale.c())
         self._site_frequency.setValidator(freq_validator)
         power_validator = QDoubleValidator(-60.0, 60.0, 2, self)
@@ -83,9 +90,12 @@ class InspectorPanel(QWidget):
         self._calc_distance.setValidator(dist_validator)
         self._calc_fspl.setReadOnly(True)
         self._calc_required_eirp.setReadOnly(True)
+        self._calc_required_eirp.setVisible(False)
         self._calc_eirp_ok.setReadOnly(True)
         self._site_apply = QPushButton("Застосувати антену", self)
         self._site_apply.clicked.connect(self._apply_site_changes)
+        self._site_apply_basic = QPushButton("Застосувати сайт", self)
+        self._site_apply_basic.clicked.connect(self._apply_site_basic_changes)
         self._site_frequency.textChanged.connect(self._update_eirp_calculator)
         self._calc_distance.textChanged.connect(self._update_eirp_calculator)
         self._site_rx_sens.textChanged.connect(self._update_eirp_calculator)
@@ -98,6 +108,8 @@ class InspectorPanel(QWidget):
             self._site_beamwidth,
             self._site_gain,
             self._site_height,
+            self._site_lat,
+            self._site_lon,
             self._site_frequency,
             self._site_tx_power,
             self._site_rx_gain,
@@ -110,7 +122,8 @@ class InspectorPanel(QWidget):
             field.textChanged.connect(lambda _text, f=field: self._normalize_decimal(f))
         label_name = QLabel("Назва:")
         label_type = QLabel("Тип:")
-        label_coords = QLabel("Координати:")
+        label_lat = QLabel("Широта:")
+        label_lon = QLabel("Довгота:")
         label_elevation = QLabel("Висота:")
         label_notes = QLabel("Нотатки:")
         label_antenna = QLabel("Тип антени:")
@@ -118,7 +131,7 @@ class InspectorPanel(QWidget):
         label_beamwidth = QLabel("Сектор (°):")
         label_gain = QLabel("Підсилення (dBi):")
         label_height = QLabel("Висота антени (м):")
-        label_frequency = QLabel("Частота (ГГц):")
+        label_frequency = QLabel("Частота (МГц):")
         label_tx_power = QLabel("Потужність TX (dBm):")
         label_rx_gain = QLabel("Підсилення RX (dBi):")
         label_rx_height = QLabel("Висота RX (м):")
@@ -143,7 +156,10 @@ class InspectorPanel(QWidget):
             "Після вибору внеси RX sensitivity зі специфікації."
         )
         label_calc_distance.setToolTip("Введи відому дистанцію для оцінки втрат у вільному просторі.")
-        label_calc_fspl.setToolTip("FSPL = 92.45 + 20·log10(d_km) + 20·log10(f_GHz)")
+        label_calc_fspl.setToolTip(
+            "FSPL = 92.45 + 20·log10(d_km) + 20·log10(f_GHz)\n"
+            "f_GHz = f_MHz / 1000"
+        )
         label_calc_ok.setToolTip("Наведи курсор, щоб побачити фактичне/потрібне EIRP.")
 
         self._site_mcs.addItem("Auto", None)
@@ -152,7 +168,8 @@ class InspectorPanel(QWidget):
 
         site_layout.addRow(label_name, self._site_name)
         site_layout.addRow(label_type, self._site_type)
-        site_layout.addRow(label_coords, self._site_coords)
+        site_layout.addRow(label_lat, self._site_lat)
+        site_layout.addRow(label_lon, self._site_lon)
         site_layout.addRow(label_elevation, self._site_elevation)
         site_layout.addRow(label_notes, self._site_notes)
         site_layout.addRow(label_antenna, self._site_antenna_type)
@@ -171,6 +188,7 @@ class InspectorPanel(QWidget):
         site_layout.addRow(label_calc_distance, self._calc_distance)
         site_layout.addRow(label_calc_fspl, self._calc_fspl)
         site_layout.addRow(label_calc_ok, self._calc_eirp_ok)
+        site_layout.addRow(self._site_apply_basic)
         site_layout.addRow(self._site_apply)
 
         self._link_group = QWidget(self)
@@ -231,14 +249,16 @@ class InspectorPanel(QWidget):
 
     def show_site(self, site: Site | None) -> None:
         if site is None:
-            self._site_name.setText("—")
-            self._site_type.setText("—")
-            self._site_coords.setText("—")
+            self._site_name.setText("")
+            self._site_type.setCurrentIndex(0)
+            self._site_lat.setText("")
+            self._site_lon.setText("")
             self._site_elevation.setText("—")
             self._site_notes.setText("—")
             self._calc_distance.setText("")
             self._calc_fspl.setText("")
             self._calc_required_eirp.setText("")
+            self._calc_eirp_ok.setText("")
             self._site_group.setVisible(True)
             self._link_group.setVisible(False)
             self._current_link_id = None
@@ -246,8 +266,11 @@ class InspectorPanel(QWidget):
             return
 
         self._site_name.setText(site.name)
-        self._site_type.setText(self._site_kind_label(site.kind.value))
-        self._site_coords.setText(f"{site.location.lat:.6f}, {site.location.lon:.6f}")
+        type_idx = self._site_type.findData(site.kind)
+        if type_idx >= 0:
+            self._site_type.setCurrentIndex(type_idx)
+        self._site_lat.setText(f"{site.location.lat:.6f}")
+        self._site_lon.setText(f"{site.location.lon:.6f}")
         self._site_elevation.setText("—")
         self._site_notes.setText(f"пристроїв: {len(site.devices)}")
         antenna = site.antenna
@@ -259,7 +282,10 @@ class InspectorPanel(QWidget):
         self._site_beamwidth.setText("" if antenna.beamwidth_deg is None else str(antenna.beamwidth_deg))
         self._site_gain.setText("" if antenna.gain_dbi is None else str(antenna.gain_dbi))
         self._site_height.setText("" if antenna.height_m is None else str(antenna.height_m))
-        self._site_frequency.setText("" if antenna.frequency_ghz is None else str(antenna.frequency_ghz))
+        if antenna.frequency_ghz is None:
+            self._site_frequency.setText("")
+        else:
+            self._site_frequency.setText(f"{antenna.frequency_ghz * 1000.0:.3f}")
         self._site_tx_power.setText("" if antenna.tx_power_dbm is None else str(antenna.tx_power_dbm))
         self._site_rx_gain.setText("" if antenna.rx_gain_dbi is None else str(antenna.rx_gain_dbi))
         self._site_rx_height.setText("" if antenna.rx_height_m is None else str(antenna.rx_height_m))
@@ -388,7 +414,7 @@ class InspectorPanel(QWidget):
             "beamwidth_deg": float(self._site_beamwidth.text()) if self._site_beamwidth.text().strip() else None,
             "gain_dbi": float(self._site_gain.text()) if self._site_gain.text().strip() else None,
             "height_m": float(self._site_height.text()) if self._site_height.text().strip() else None,
-            "frequency_ghz": float(self._site_frequency.text()) if self._site_frequency.text().strip() else None,
+            "frequency_ghz": self._mhz_to_ghz(self._site_frequency.text()),
             "tx_power_dbm": float(self._site_tx_power.text()) if self._site_tx_power.text().strip() else None,
             "mcs": self._site_mcs.currentData(),
             "rx_gain_dbi": float(self._site_rx_gain.text()) if self._site_rx_gain.text().strip() else None,
@@ -396,6 +422,16 @@ class InspectorPanel(QWidget):
             "rx_sensitivity_dbm": float(self._site_rx_sens.text()) if self._site_rx_sens.text().strip() else None,
             "misc_losses_db": float(self._site_misc_losses.text()) if self._site_misc_losses.text().strip() else None,
             "link_margin_db": float(self._site_margin.text()) if self._site_margin.text().strip() else None,
+        }
+        self.site_updated.emit(self._current_site_id, payload)
+
+    def _apply_site_basic_changes(self) -> None:
+        if self._current_site_id is None:
+            return
+        payload = {
+            "kind": self._site_type.currentData(),
+            "lat": float(self._site_lat.text()) if self._site_lat.text().strip() else None,
+            "lon": float(self._site_lon.text()) if self._site_lon.text().strip() else None,
         }
         self.site_updated.emit(self._current_site_id, payload)
 
@@ -407,7 +443,7 @@ class InspectorPanel(QWidget):
         losses_text = self._site_misc_losses.text().strip()
         margin_text = self._site_margin.text().strip()
         try:
-            freq = float(freq_text) if freq_text else None
+            freq_mhz = float(freq_text) if freq_text else None
             dist = float(dist_text) if dist_text else None
             rx_sens = float(rx_sens_text) if rx_sens_text else None
             rx_gain = float(rx_gain_text) if rx_gain_text else 0.0
@@ -419,12 +455,13 @@ class InspectorPanel(QWidget):
             self._calc_eirp_ok.setText("")
             self._calc_eirp_ok.setToolTip("")
             return
-        if not freq or not dist or rx_sens is None:
+        if not freq_mhz or not dist or rx_sens is None:
             self._calc_fspl.setText("")
             self._calc_required_eirp.setText("")
             self._calc_eirp_ok.setText("")
             self._calc_eirp_ok.setToolTip("")
             return
+        freq = freq_mhz / 1000.0
         fspl = 92.45 + 20.0 * math.log10(dist) + 20.0 * math.log10(freq)
         required_eirp = rx_sens + margin + fspl + losses - rx_gain
         self._calc_fspl.setText(f"{fspl:.2f}")
@@ -459,3 +496,16 @@ class InspectorPanel(QWidget):
         with QSignalBlocker(field):
             field.setText(new_text)
         field.setCursorPosition(cursor_pos)
+
+    @staticmethod
+    def _mhz_to_ghz(text: str) -> float | None:
+        value = text.strip()
+        if not value:
+            return None
+        try:
+            mhz = float(value)
+        except ValueError:
+            return None
+        if mhz <= 0:
+            return None
+        return mhz / 1000.0

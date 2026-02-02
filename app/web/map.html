@@ -78,10 +78,13 @@
         return div;
       };
 
+      map.createPane('coveragePane');
+      map.getPane('coveragePane').style.zIndex = 250;
+
       const markers = new Map();
       const links = new Map();
       const coverages = new Map();
-      const coverageLayer = L.layerGroup().addTo(map);
+      const coverageLayer = L.layerGroup({ pane: 'coveragePane' }).addTo(map);
       let bridge = null;
       let linkMode = false;
       let heightMode = false;
@@ -184,15 +187,16 @@
         if (!polygon) { return; }
         polygon.setStyle({ color: color, fillColor: color });
         polygon.addTo(coverageLayer);
-        coverages.set(id, polygon);
+        coverages.set(id, [polygon]);
       }
 
       function updateCoverage(id, lat, lon, azimuth, beamwidth, rangeKm, color, tooltip) {
-        const polygon = coverages.get(id);
-        if (!polygon) {
+        const existing = coverages.get(id);
+        if (!existing || existing.length !== 1) {
           addCoverage(id, lat, lon, azimuth, beamwidth, rangeKm, color);
           return;
         }
+        const polygon = existing[0];
         const latlngs = buildCoverageLatLngs(lat, lon, azimuth, beamwidth, rangeKm);
         if (!latlngs) { return; }
         polygon.setLatLngs(latlngs);
@@ -201,23 +205,44 @@
       }
 
       function updateCoveragePoints(id, latlngs, color, tooltip) {
-        const polygon = coverages.get(id);
-        if (!polygon) {
+        const existing = coverages.get(id);
+        if (!existing || existing.length !== 1) {
           const newPoly = L.polygon(latlngs, { color: color, fillColor: color, fillOpacity: 0.15 });
           if (tooltip) { newPoly.bindTooltip(tooltip); }
           newPoly.addTo(coverageLayer);
-          coverages.set(id, newPoly);
+          coverages.set(id, [newPoly]);
           return;
         }
+        const polygon = existing[0];
         polygon.setLatLngs(latlngs);
         if (color) { polygon.setStyle({ color: color, fillColor: color }); }
         if (tooltip) { polygon.bindTooltip(tooltip); }
       }
 
+      function updateCoverageBands(id, bands, tooltip) {
+        const existing = coverages.get(id);
+        if (existing) {
+          existing.forEach((poly) => coverageLayer.removeLayer(poly));
+        }
+        const polys = [];
+        bands.forEach((band) => {
+          const poly = L.polygon(band.latlngs, {
+            color: band.color,
+            fillColor: band.color,
+            fillOpacity: 0.2,
+            weight: 1,
+          });
+          if (tooltip) { poly.bindTooltip(tooltip); }
+          poly.addTo(coverageLayer);
+          polys.push(poly);
+        });
+        coverages.set(id, polys);
+      }
+
       function removeCoverage(id) {
-        const polygon = coverages.get(id);
-        if (!polygon) { return; }
-        coverageLayer.removeLayer(polygon);
+        const polygons = coverages.get(id);
+        if (!polygons) { return; }
+        polygons.forEach((polygon) => coverageLayer.removeLayer(polygon));
         coverages.delete(id);
       }
 

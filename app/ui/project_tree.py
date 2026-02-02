@@ -25,7 +25,8 @@ class ProjectTree(QTreeWidget):
         self._link_items.clear()
 
         for site in project.sites.values():
-            item = QTreeWidgetItem([f"{site.name} ({site.kind.value})"])
+            kind_value = site.kind.value if hasattr(site.kind, "value") else str(site.kind)
+            item = QTreeWidgetItem([f"{site.name} ({kind_value})"])
             item.setData(0, Qt.ItemDataRole.UserRole, site.id)
             self._nodes_item.addChild(item)
             self._node_items[site.id] = item

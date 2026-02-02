@@ -192,6 +192,11 @@ class MapView(QWebEngineView):
             f"updateCoveragePoints({site_id!r}, {points!r}, {color!r}, {tooltip!r});"
         )
 
+    def update_coverage_bands(self, site_id: str, bands: list, tooltip: str) -> None:
+        self.page().runJavaScript(
+            f"updateCoverageBands({site_id!r}, {bands!r}, {tooltip!r});"
+        )
+
     def remove_coverage(self, site_id: str) -> None:
         self.page().runJavaScript(f"removeCoverage({site_id!r});")
 

@@ -4,7 +4,7 @@ import math
 from uuid import uuid4
 
 from PySide6.QtCore import Signal, QLocale, QSignalBlocker, Qt
-from PySide6.QtGui import QDoubleValidator
+from PySide6.QtGui import QDoubleValidator, QValidator
 from PySide6.QtWidgets import (
     QComboBox,
     QFormLayout,
@@ -25,12 +25,14 @@ from app.domain import AntennaParams, CableType, Link, LinkKind, LinkType, Site,
 class AntennaBlock(QWidget):
     apply_requested = Signal(str, dict)
     delete_requested = Signal(str)
+    validity_changed = Signal(bool)
 
     def __init__(self, antenna: AntennaParams | None, index: int, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.antenna_id = antenna.id if antenna else uuid4().hex[:8]
         self._index = index
         self._applied = antenna.applied if antenna else False
+        self._is_valid = True
 
         self._toggle_btn = QToolButton(self)
         self._toggle_btn.setCheckable(True)
@@ -49,6 +51,12 @@ class AntennaBlock(QWidget):
 
         self._content = QWidget(self)
         form = QFormLayout(self._content)
+
+        def add_hint(text: str) -> None:
+            hint = QLabel(text, self)
+            hint.setWordWrap(True)
+            hint.setStyleSheet("color: #9aa0a6; font-size: 11px;")
+            form.addRow(QLabel(""), hint)
 
         self._antenna_type = QComboBox(self)
         self._antenna_type.addItems(["omni", "sector", "directional"])
@@ -81,8 +89,8 @@ class AntennaBlock(QWidget):
         self._azimuth.setValidator(QDoubleValidator(0.0, 360.0, 1, self))
         self._beamwidth.setValidator(QDoubleValidator(0.0, 360.0, 1, self))
         self._gain.setValidator(QDoubleValidator(0.0, 60.0, 1, self))
-        self._height.setValidator(QDoubleValidator(0.0, 200.0, 2, self))
-        freq_validator = QDoubleValidator(1.0, 100000.0, 3, self)
+        self._height.setValidator(QDoubleValidator(0.0, 8000.0, 2, self))
+        freq_validator = QDoubleValidator(0.1, 30000.0, 3, self)
         freq_validator.setLocale(QLocale.c())
         self._frequency.setValidator(freq_validator)
         power_validator = QDoubleValidator(-60.0, 60.0, 2, self)
@@ -91,7 +99,7 @@ class AntennaBlock(QWidget):
         gain_validator = QDoubleValidator(0.0, 60.0, 1, self)
         gain_validator.setLocale(QLocale.c())
         self._rx_gain.setValidator(gain_validator)
-        rx_height_validator = QDoubleValidator(0.0, 200.0, 2, self)
+        rx_height_validator = QDoubleValidator(0.0, 8000.0, 2, self)
         rx_height_validator.setLocale(QLocale.c())
         self._rx_height.setValidator(rx_height_validator)
         sens_validator = QDoubleValidator(-150.0, -30.0, 2, self)
@@ -142,18 +150,30 @@ class AntennaBlock(QWidget):
 
         form.addRow(QLabel("Тип антени:"), self._antenna_type)
         form.addRow(QLabel("Азимут:"), self._azimuth)
+        add_hint("Діапазон: 0–360°.")
         form.addRow(QLabel("Сектор випромінення(°):"), self._beamwidth)
+        add_hint("Діапазон: 0–360°.")
         form.addRow(QLabel("Підсилення TX (dBi):"), self._gain)
+        add_hint("Діапазон: 0–60 dBi.")
         form.addRow(QLabel("Висота антени TX (м):"), self._height)
+        add_hint("Діапазон: 0–8000 м.")
         form.addRow(QLabel("Частота TX (МГц):"), self._frequency)
+        add_hint("Діапазон: 0.1–30000 МГц.")
         form.addRow(QLabel("Потужність TX (dBm):"), self._tx_power)
+        add_hint("Діапазон: -60…60 dBm.")
         form.addRow(label_mcs, self._mcs)
         form.addRow(label_rx_gain, self._rx_gain)
+        add_hint("Діапазон: 0–60 dBi.")
         form.addRow(label_rx_height, self._rx_height)
+        add_hint("Діапазон: 0–8000 м.")
         form.addRow(label_rx_sens, self._rx_sens)
+        add_hint("Діапазон: -150…-30 dBm.")
         form.addRow(label_losses, self._losses)
+        add_hint("Діапазон: 0–60 dB.")
         form.addRow(label_margin, self._margin)
+        add_hint("Діапазон: 0–40 dB.")
         form.addRow(label_calc_distance, self._calc_distance)
+        add_hint("Діапазон: 0.1–300 км.")
         form.addRow(label_calc_fspl, self._calc_fspl)
         form.addRow(label_calc_ok, self._calc_ok)
 
@@ -185,6 +205,7 @@ class AntennaBlock(QWidget):
             self._calc_distance,
         ):
             field.textChanged.connect(lambda _text, f=field: self._normalize_decimal(f))
+            field.textChanged.connect(self._validate_inputs)
 
         for field in (
             self._frequency,
@@ -220,6 +241,7 @@ class AntennaBlock(QWidget):
             self._losses.setText("" if antenna.misc_losses_db is None else str(antenna.misc_losses_db))
             self._margin.setText("" if antenna.link_margin_db is None else str(antenna.link_margin_db))
             self._update_eirp_calculator()
+        self._validate_inputs()
 
     def _toggle_content(self) -> None:
         expanded = self._toggle_btn.isChecked()
@@ -237,6 +259,9 @@ class AntennaBlock(QWidget):
 
     def set_applied(self, value: bool) -> None:
         self._applied = value
+
+    def is_valid(self) -> bool:
+        return self._is_valid
 
     def to_payload(self) -> dict:
         name = self._name.text().strip() or f"Антена {self._index}"
@@ -307,6 +332,49 @@ class AntennaBlock(QWidget):
         self._calc_ok.setToolTip(
             f"EIRP_actual: {actual_eirp:.2f} dBm\nEIRP_required: {required_eirp:.2f} dBm"
         )
+
+    def _validate_inputs(self) -> None:
+        fields = (
+            self._azimuth,
+            self._beamwidth,
+            self._gain,
+            self._height,
+            self._frequency,
+            self._tx_power,
+            self._rx_gain,
+            self._rx_height,
+            self._rx_sens,
+            self._losses,
+            self._margin,
+            self._calc_distance,
+        )
+        all_valid = True
+        for field in fields:
+            valid = self._is_field_valid(field)
+            self._set_field_validity(field, valid)
+            all_valid = all_valid and valid
+        self._apply_btn.setEnabled(all_valid)
+        if all_valid != self._is_valid:
+            self._is_valid = all_valid
+            self.validity_changed.emit(all_valid)
+
+    @staticmethod
+    def _is_field_valid(field: QLineEdit) -> bool:
+        text = field.text().strip()
+        if not text:
+            return True
+        validator = field.validator()
+        if validator is None:
+            return True
+        state, _, _ = validator.validate(text, 0)
+        return state == QValidator.State.Acceptable
+
+    @staticmethod
+    def _set_field_validity(field: QLineEdit, valid: bool) -> None:
+        if valid:
+            field.setStyleSheet("")
+        else:
+            field.setStyleSheet("border: 1px solid #dc2626;")
 
     @staticmethod
     def _mhz_to_ghz(text: str) -> float | None:
@@ -414,9 +482,12 @@ class InspectorPanel(QWidget):
         self._link_between = QLabel("—")
         self._link_distance = QLabel("—")
         self._link_frequency = QLineEdit(self)
-        freq_validator = QDoubleValidator(0.0, 100.0, 6, self)
+        freq_validator = QDoubleValidator(0.0001, 30.0, 6, self)
         freq_validator.setLocale(QLocale.c())
         self._link_frequency.setValidator(freq_validator)
+        self._link_freq_hint = QLabel("Діапазон: 0.0001–30 ГГц.")
+        self._link_freq_hint.setStyleSheet("color: #9aa0a6; font-size: 11px;")
+        self._link_frequency.textChanged.connect(self._validate_link_fields)
         self._link_ssid = QLineEdit(self)
         self._link_password = QLineEdit(self)
         self._link_notes = QLineEdit(self)
@@ -439,6 +510,7 @@ class InspectorPanel(QWidget):
         link_layout.addRow(QLabel("Між:"), self._link_between)
         link_layout.addRow(QLabel("Дистанція:"), self._link_distance)
         link_layout.addRow(self._label_frequency, self._link_frequency)
+        link_layout.addRow(QLabel(""), self._link_freq_hint)
         link_layout.addRow(self._label_ssid, self._link_ssid)
         link_layout.addRow(self._label_password, self._link_password)
         link_layout.addRow(QLabel("Нотатки:"), self._link_notes)
@@ -492,7 +564,7 @@ class InspectorPanel(QWidget):
         for idx, antenna in enumerate(site.antennas, start=1):
             self._add_antenna_block(antenna, idx)
         self._add_antenna_btn.setEnabled(True)
-        self._apply_all_antennas_btn.setEnabled(True)
+        self._update_apply_all_state()
         self._site_group.setVisible(True)
         self._link_group.setVisible(False)
         self._current_link_id = None
@@ -540,8 +612,10 @@ class InspectorPanel(QWidget):
         block = AntennaBlock(antenna, idx, self)
         block.apply_requested.connect(self._apply_single_antenna)
         block.delete_requested.connect(self._delete_antenna_block)
+        block.validity_changed.connect(lambda _ok: self._update_apply_all_state())
         self._antenna_blocks.append(block)
         self._antenna_container.addWidget(block)
+        self._update_apply_all_state()
 
     def _apply_single_antenna(self, antenna_id: str, payload: dict) -> None:
         if self._current_site_id is None:
@@ -563,6 +637,7 @@ class InspectorPanel(QWidget):
             block.set_applied(True)
             antennas.append(data)
         self.site_updated.emit(self._current_site_id, {"antennas": antennas, "apply_all": True})
+        self._update_apply_all_state()
 
     def _delete_antenna_block(self, antenna_id: str) -> None:
         if self._current_site_id is None:
@@ -587,6 +662,14 @@ class InspectorPanel(QWidget):
             data["name"] = data.get("name") or f"Антена {idx}"
             antennas.append(data)
         self.site_updated.emit(self._current_site_id, {"antennas": antennas})
+        self._update_apply_all_state()
+
+    def _update_apply_all_state(self) -> None:
+        if self._current_site_id is None or not self._antenna_blocks:
+            self._apply_all_antennas_btn.setEnabled(False)
+            return
+        all_valid = all(block.is_valid() for block in self._antenna_blocks)
+        self._apply_all_antennas_btn.setEnabled(all_valid)
 
     def set_site_elevation(self, elevation_m: float | None, available: bool = True) -> None:
         if elevation_m is None:
@@ -615,6 +698,7 @@ class InspectorPanel(QWidget):
         for widget in (
             self._label_frequency,
             self._link_frequency,
+            self._link_freq_hint,
             self._label_ssid,
             self._link_ssid,
             self._label_password,
@@ -623,6 +707,18 @@ class InspectorPanel(QWidget):
             widget.setVisible(is_wireless)
         for widget in (self._label_link_type, self._link_type, self._label_cable_type, self._cable_type):
             widget.setVisible(not is_wireless)
+        self._validate_link_fields()
+
+    def _validate_link_fields(self) -> None:
+        kind = self._link_kind.currentData()
+        is_wireless = kind in (LinkKind.PTP, LinkKind.PTMP)
+        valid = True
+        if is_wireless:
+            valid = AntennaBlock._is_field_valid(self._link_frequency)
+            AntennaBlock._set_field_validity(self._link_frequency, valid)
+        else:
+            AntennaBlock._set_field_validity(self._link_frequency, True)
+        self._apply_btn.setEnabled(valid)
 
     def _apply_link_changes(self) -> None:
         if self._current_link_id is None:

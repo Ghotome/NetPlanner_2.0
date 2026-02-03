@@ -4,7 +4,7 @@ import math
 from typing import Optional
 
 from PySide6.QtCore import QLocale
-from PySide6.QtGui import QDoubleValidator
+from PySide6.QtGui import QDoubleValidator, QValidator
 from PySide6.QtWidgets import (
     QDialog,
     QFormLayout,
@@ -40,7 +40,7 @@ class EirpCalculatorDialog(QDialog):
         for field in (self._fspl, self._eirp_required, self._eirp_actual, self._eirp_ok):
             field.setReadOnly(True)
 
-        freq_validator = QDoubleValidator(1.0, 100000.0, 3, self)
+        freq_validator = QDoubleValidator(0.1, 30000.0, 3, self)
         freq_validator.setLocale(QLocale.c())
         dist_validator = QDoubleValidator(0.1, 300.0, 2, self)
         dist_validator.setLocale(QLocale.c())
@@ -75,6 +75,7 @@ class EirpCalculatorDialog(QDialog):
             self._margin,
         ):
             field.textChanged.connect(self._update)
+            field.textChanged.connect(self._validate_inputs)
 
         intro = QLabel(
             "Калькулятор існує для оцінки FSPL розрахунку EIRP\n"
@@ -84,14 +85,29 @@ class EirpCalculatorDialog(QDialog):
         intro.setWordWrap(True)
 
         form = QFormLayout()
+
+        def add_hint(text: str) -> None:
+            hint = QLabel(text, self)
+            hint.setWordWrap(True)
+            hint.setStyleSheet("color: #9aa0a6; font-size: 11px;")
+            form.addRow(QLabel(""), hint)
+
         form.addRow(QLabel("Частота (МГц):"), self._frequency)
+        add_hint("Діапазон: 0.1–30000 МГц.")
         form.addRow(QLabel("Необхідна дистанція (км):"), self._distance)
+        add_hint("Діапазон: 0.1–300 км.")
         form.addRow(QLabel("Потужність TX (dBm):"), self._tx_power)
+        add_hint("Діапазон: -60…60 dBm.")
         form.addRow(QLabel("Підсилення TX (dBi):"), self._tx_gain)
+        add_hint("Діапазон: 0–60 dBi.")
         form.addRow(QLabel("Підсилення RX (dBi):"), self._rx_gain)
+        add_hint("Діапазон: 0–60 dBi.")
         form.addRow(QLabel("Чутливість RX (dBm):"), self._rx_sens)
+        add_hint("Діапазон: -150…-30 dBm.")
         form.addRow(QLabel("Втрати АФТ (дБ):"), self._losses)
+        add_hint("Діапазон: 0–60 dB.")
         form.addRow(QLabel("Закладені втрати (дБ):"), self._margin)
+        add_hint("Діапазон: 0–40 dB.")
 
         form.addRow(QLabel("FSPL (дБ):"), self._fspl)
         form.addRow(QLabel("EIRP потрібний (dBm):"), self._eirp_required)
@@ -135,8 +151,10 @@ class EirpCalculatorDialog(QDialog):
                 self._margin.setText(str(antenna.link_margin_db))
 
         self._update()
+        self._validate_inputs()
 
     def _update(self) -> None:
+        self._validate_inputs()
         freq = self._parse_float(self._frequency)
         dist = self._parse_float(self._distance)
         tx_power = self._parse_float(self._tx_power)
@@ -172,6 +190,21 @@ class EirpCalculatorDialog(QDialog):
         self._eirp_ok.setText("OK" if ok else "НЕ ОК")
         self._eirp_ok.setStyleSheet("color: #16a34a;" if ok else "color: #dc2626;")
 
+    def _validate_inputs(self) -> None:
+        fields = (
+            self._frequency,
+            self._distance,
+            self._tx_power,
+            self._tx_gain,
+            self._rx_gain,
+            self._rx_sens,
+            self._losses,
+            self._margin,
+        )
+        for field in fields:
+            valid = self._is_field_valid(field)
+            self._set_field_validity(field, valid)
+
     @staticmethod
     def _parse_float(field: QLineEdit, default: Optional[float] = None) -> Optional[float]:
         text = field.text().strip()
@@ -181,3 +214,21 @@ class EirpCalculatorDialog(QDialog):
             return float(text)
         except ValueError:
             return default
+
+    @staticmethod
+    def _is_field_valid(field: QLineEdit) -> bool:
+        text = field.text().strip()
+        if not text:
+            return True
+        validator = field.validator()
+        if validator is None:
+            return True
+        state, _, _ = validator.validate(text, 0)
+        return state == QValidator.State.Acceptable
+
+    @staticmethod
+    def _set_field_validity(field: QLineEdit, valid: bool) -> None:
+        if valid:
+            field.setStyleSheet("")
+        else:
+            field.setStyleSheet("border: 1px solid #dc2626;")

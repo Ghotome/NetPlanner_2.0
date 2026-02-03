@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import datetime
-from pathlib import Path
 from dataclasses import replace
 from concurrent.futures import ThreadPoolExecutor
 from math import asin, atan2, cos, log10, radians, sin, sqrt
@@ -18,15 +17,12 @@ from PySide6.QtWidgets import (
     QSplitter,
     QToolTip,
     QTreeWidgetItem,
-    QDialog,
-    QTextEdit,
-    QVBoxLayout,
     QWidget,
 )
 from PySide6.QtGui import QAction, QPalette
 
 from app.coverage import CoverageCalculator
-from app.domain import GeoPoint, Link, LinkKind, NetworkProject, Site, SiteKind, StatusState
+from app.domain import AntennaParams, GeoPoint, Link, LinkKind, NetworkProject, Site, SiteKind, StatusState
 from app.elevation import ElevationProvider
 from app.link_analyzer import LinkAnalyzer, LinkProfile
 from app.project_io import load_project, save_project
@@ -98,7 +94,7 @@ class MainWindow(QMainWindow):
         self._bg_executor = ThreadPoolExecutor(max_workers=2)
         self._prefetch_token = 0
         self._coverage_job_seq = 0
-        self._coverage_job_for_site: dict[str, int] = {}
+        self._coverage_job_for_key: dict[str, int] = {}
         self._busy_count = 0
         self.prefetch_finished.connect(self._finish_prefetch)
         self.coverage_result_ready.connect(self._apply_coverage_result)
@@ -292,7 +288,6 @@ class MainWindow(QMainWindow):
         edit_menu.addAction("Перейменувати", self._rename_selected, "F2")
 
         help_menu = menu.addMenu("Довідка")
-        help_menu.addAction("Гайд користувача", self._show_user_guide)
         help_menu.addAction("Про програму", self._about)
 
     def _apply_styles(self) -> None:
@@ -334,22 +329,6 @@ class MainWindow(QMainWindow):
     def _about(self) -> None:
         QMessageBox.information(self, "Про програму", "Network Planner v1.0.0")
 
-    def _show_user_guide(self) -> None:
-        guide_path = Path(__file__).resolve().parents[1] / "USER_GUIDE.md"
-        if not guide_path.exists():
-            QMessageBox.information(self, "Гайд користувача", "Файл USER_GUIDE.md не знайдено.")
-            return
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Гайд користувача")
-        dialog.resize(760, 600)
-        text = QTextEdit(dialog)
-        text.setReadOnly(True)
-        text.setPlainText(guide_path.read_text(encoding="utf-8"))
-        layout = QVBoxLayout(dialog)
-        layout.addWidget(text)
-        dialog.setLayout(layout)
-        dialog.exec()
-
     def _on_map_context_menu(self, lat: float, lon: float, x: int, y: int) -> None:
         menu = QMenu(self)
         menu.setTitle("Створити")
@@ -387,23 +366,9 @@ class MainWindow(QMainWindow):
             kind=kind,
             location=GeoPoint(lat=lat, lon=lon),
         )
-        if site.antenna.antenna_type is None:
-            site.antenna.antenna_type = "sector"
-            site.antenna.azimuth_deg = 0.0
-            site.antenna.beamwidth_deg = 120.0
-            site.antenna.gain_dbi = 12.0
-        if site.antenna.frequency_ghz is None:
-            site.antenna.frequency_ghz = 5.8
-        if site.antenna.tx_power_dbm is None:
-            site.antenna.tx_power_dbm = 20.0
-        if site.antenna.misc_losses_db is None:
-            site.antenna.misc_losses_db = 4.0
-        if site.antenna.link_margin_db is None:
-            site.antenna.link_margin_db = 6.0
         self._project.add_site(site)
         self.project_tree.add_node(site.id, f"{site.name} ({site.kind.value})")
         self.map_view.add_marker(site.id, site.name, self._site_kind_label(site.kind.value), lat, lon)
-        self._update_site_coverage(site)
         self.inspector.show_site(site)
         self._dirty = True
         self._ping_checker.set_devices(self._all_devices())
@@ -445,7 +410,7 @@ class MainWindow(QMainWindow):
                         b.location.lat,
                         b.location.lon,
                     )
-        self._update_site_coverage(site)
+        self._update_site_coverages(site)
         if self.project_tree.currentItem() is not None:
             current_id = self.project_tree.currentItem().data(0, Qt.ItemDataRole.UserRole)
             if current_id == site_id:
@@ -489,7 +454,7 @@ class MainWindow(QMainWindow):
         if ok and new_name.strip():
             site.name = new_name.strip()
             self.map_view.update_marker_label(site.id, site.name, self._site_kind_label(site.kind.value))
-            self._update_site_coverage(site)
+            self._update_site_coverages(site)
             self.project_tree.set_project(self._project)
             self._dirty = True
 
@@ -519,7 +484,9 @@ class MainWindow(QMainWindow):
             site_id = node_id.split(":", 1)[0] if isinstance(node_id, str) else node_id
             site = self._project.sites.get(site_id)
             if site:
-                antenna = site.antenna
+                antenna = next((a for a in site.antennas if a.applied), None) or (
+                    site.antennas[0] if site.antennas else None
+                )
         dialog = EirpCalculatorDialog(antenna, self)
         dialog.exec()
 
@@ -641,7 +608,7 @@ class MainWindow(QMainWindow):
             elevation = self._elevation.get_elevation(site.location.lat, site.location.lon)
             self.inspector.set_site_elevation(elevation, self._elevation.available)
             self.map_view.focus_marker(site.id)
-            self._update_site_coverage(site)
+            self._update_site_coverages(site)
 
     def _on_tree_item_double_clicked(self, item: QTreeWidgetItem, column: int) -> None:
         if item is None:
@@ -755,7 +722,10 @@ class MainWindow(QMainWindow):
         for link_id in links_to_remove:
             self.map_view.remove_link(link_id)
         self._project.remove_site(site_id)
-        self.map_view.remove_coverage(site_id)
+        for antenna in site.antennas:
+            coverage_id = self._coverage_key(site_id, antenna.id)
+            self.map_view.remove_coverage(coverage_id)
+            self._coverage_job_for_key.pop(coverage_id, None)
         self.map_view.remove_marker(site_id)
         self.project_tree.set_project(self._project)
         self.inspector.show_site(None)
@@ -801,6 +771,7 @@ class MainWindow(QMainWindow):
         site = self._project.sites.get(site_id)
         if site is None:
             return
+        location_changed = False
         if "name" in data and data["name"]:
             site.name = data["name"]
         if "kind" in data and data["kind"] is not None:
@@ -809,37 +780,64 @@ class MainWindow(QMainWindow):
         lon = data.get("lon")
         if lat is not None and lon is not None:
             site.location = GeoPoint(lat=lat, lon=lon, altitude_m=site.location.altitude_m)
-        if "antenna_type" in data:
-            site.antenna.antenna_type = data.get("antenna_type")
-        if "azimuth_deg" in data:
-            site.antenna.azimuth_deg = data.get("azimuth_deg")
-        if "beamwidth_deg" in data:
-            site.antenna.beamwidth_deg = data.get("beamwidth_deg")
-        if "gain_dbi" in data:
-            site.antenna.gain_dbi = data.get("gain_dbi")
-        if "height_m" in data:
-            site.antenna.height_m = data.get("height_m")
-        if "frequency_ghz" in data:
-            site.antenna.frequency_ghz = data.get("frequency_ghz")
-        if "tx_power_dbm" in data:
-            site.antenna.tx_power_dbm = data.get("tx_power_dbm")
-        if "mcs" in data:
-            site.antenna.mcs = data.get("mcs")
-        if "rx_gain_dbi" in data:
-            site.antenna.rx_gain_dbi = data.get("rx_gain_dbi")
-        if "rx_height_m" in data:
-            site.antenna.rx_height_m = data.get("rx_height_m")
-        if "rx_sensitivity_dbm" in data:
-            site.antenna.rx_sensitivity_dbm = data.get("rx_sensitivity_dbm")
-        if "misc_losses_db" in data:
-            site.antenna.misc_losses_db = data.get("misc_losses_db")
-        if "link_margin_db" in data:
-            site.antenna.link_margin_db = data.get("link_margin_db")
+            location_changed = True
+
+        def update_antenna(target: AntennaParams, payload: dict) -> None:
+            target.name = payload.get("name") or target.name
+            target.antenna_type = payload.get("antenna_type")
+            target.azimuth_deg = payload.get("azimuth_deg")
+            target.beamwidth_deg = payload.get("beamwidth_deg")
+            target.gain_dbi = payload.get("gain_dbi")
+            target.height_m = payload.get("height_m")
+            target.frequency_ghz = payload.get("frequency_ghz")
+            target.tx_power_dbm = payload.get("tx_power_dbm")
+            target.mcs = payload.get("mcs")
+            target.rx_gain_dbi = payload.get("rx_gain_dbi")
+            target.rx_height_m = payload.get("rx_height_m")
+            target.rx_sensitivity_dbm = payload.get("rx_sensitivity_dbm")
+            target.misc_losses_db = payload.get("misc_losses_db")
+            target.link_margin_db = payload.get("link_margin_db")
+            if "applied" in payload:
+                target.applied = bool(payload.get("applied"))
+
+        antenna_payload = data.get("antenna")
+        if isinstance(antenna_payload, dict):
+            antenna_id = antenna_payload.get("id") or uuid4().hex[:8]
+            antenna = next((a for a in site.antennas if a.id == antenna_id), None)
+            if antenna is None:
+                antenna = AntennaParams(id=antenna_id)
+                site.antennas.append(antenna)
+            update_antenna(antenna, antenna_payload)
+            if data.get("apply"):
+                antenna.applied = True
+                self._update_antenna_coverage(site, antenna)
+
+        antennas_payload = data.get("antennas")
+        if isinstance(antennas_payload, list):
+            old_ids = {a.id for a in site.antennas}
+            new_antennas: list[AntennaParams] = []
+            for payload in antennas_payload:
+                if not isinstance(payload, dict):
+                    continue
+                antenna_id = payload.get("id") or uuid4().hex[:8]
+                antenna = AntennaParams(id=antenna_id)
+                update_antenna(antenna, payload)
+                new_antennas.append(antenna)
+            site.antennas = new_antennas
+            new_ids = {a.id for a in site.antennas}
+            for removed_id in old_ids - new_ids:
+                self.map_view.remove_coverage(self._coverage_key(site.id, removed_id))
+                self._coverage_job_for_key.pop(self._coverage_key(site.id, removed_id), None)
+            if data.get("apply_all"):
+                for antenna in site.antennas:
+                    antenna.applied = True
+                    self._update_antenna_coverage(site, antenna)
         kind_value = site.kind.value if hasattr(site.kind, "value") else str(site.kind)
         self.map_view.update_marker_label(site.id, site.name, self._site_kind_label(kind_value))
         self.map_view.move_marker(site.id, site.location.lat, site.location.lon)
         self.inspector.show_site(site)
-        self._update_site_coverage(site)
+        if location_changed:
+            self._update_site_coverages(site)
         for link in self._project.links.values():
             if link.site_a_id == site.id or link.site_b_id == site.id:
                 site_a = self._project.sites.get(link.site_a_id)
@@ -901,7 +899,12 @@ class MainWindow(QMainWindow):
     def _link_info(link: Link, site_a: Site | None = None) -> str:
         kind_value = link.kind.value if hasattr(link.kind, "value") else str(link.kind)
         distance_text = f"{link.distance_km:.2f} км" if link.distance_km is not None else "-"
-        antenna_height = site_a.antenna.height_m if site_a and site_a.antenna else None
+        antenna = (
+            next((a for a in site_a.antennas if a.applied), None)
+            if site_a and site_a.antennas
+            else None
+        ) or (site_a.antennas[0] if site_a and site_a.antennas else None)
+        antenna_height = antenna.height_m if antenna else None
         notes_text = f"\nНотатки: {link.notes_text}" if link.notes_text else ""
         if kind_value in ("ptp", "ptmp"):
             return (
@@ -932,17 +935,30 @@ class MainWindow(QMainWindow):
         c = 2 * asin(sqrt(a))
         return r * c
 
-    def _update_site_coverage(self, site: Site) -> None:
-        antenna = site.antenna
-        if antenna is None or antenna.beamwidth_deg is None or antenna.gain_dbi is None:
-            self.map_view.remove_coverage(site.id)
+    @staticmethod
+    def _coverage_key(site_id: str, antenna_id: str) -> str:
+        return f"{site_id}:{antenna_id}"
+
+    def _update_site_coverages(self, site: Site) -> None:
+        for antenna in site.antennas:
+            if antenna.applied:
+                self._update_antenna_coverage(site, antenna)
+            else:
+                coverage_id = self._coverage_key(site.id, antenna.id)
+                self.map_view.remove_coverage(coverage_id)
+                self._coverage_job_for_key.pop(coverage_id, None)
+
+    def _update_antenna_coverage(self, site: Site, antenna: AntennaParams) -> None:
+        coverage_id = self._coverage_key(site.id, antenna.id)
+        if antenna.beamwidth_deg is None or antenna.gain_dbi is None:
+            self.map_view.remove_coverage(coverage_id)
             return
         beamwidth = antenna.beamwidth_deg
         azimuth = (antenna.azimuth_deg or 0.0) % 360.0
         if antenna.antenna_type == "omni":
             beamwidth = 360.0
         if beamwidth is None:
-            self.map_view.remove_coverage(site.id)
+            self.map_view.remove_coverage(coverage_id)
             return
         beamwidth = self._clamp_beamwidth(beamwidth)
         site_snapshot = Site(
@@ -954,14 +970,21 @@ class MainWindow(QMainWindow):
                 lon=site.location.lon,
                 altitude_m=site.location.altitude_m,
             ),
-            antenna=replace(antenna),
+            antennas=[],
         )
+        antenna_snapshot = replace(antenna)
         self._coverage_job_seq += 1
         job_id = self._coverage_job_seq
-        self._coverage_job_for_site[site.id] = job_id
+        self._coverage_job_for_key[coverage_id] = job_id
         self._set_busy("Розрахунок покриття…")
-        future = self._bg_executor.submit(self._compute_coverage_data, site_snapshot, azimuth, beamwidth)
-        future.add_done_callback(lambda f, sid=site.id, jid=job_id: self._on_coverage_done(sid, jid, f))
+        future = self._bg_executor.submit(
+            self._compute_coverage_data,
+            site_snapshot,
+            antenna_snapshot,
+            azimuth,
+            beamwidth,
+        )
+        future.add_done_callback(lambda f, key=coverage_id, jid=job_id: self._on_coverage_done(key, jid, f))
 
     def _cleanup_on_close(self) -> None:
         if self._dirty:
@@ -975,6 +998,7 @@ class MainWindow(QMainWindow):
         self._project = NetworkProject(id="default", name="Новий проєкт")
         self._project_path = None
         self._dirty = False
+        self._coverage_job_for_key.clear()
         self.project_tree.set_project(self._project)
         self.map_view.clear_all()
         self.inspector.show_site(None)
@@ -988,6 +1012,7 @@ class MainWindow(QMainWindow):
         self._project = load_project(path)
         self._project_path = path
         self._dirty = False
+        self._coverage_job_for_key.clear()
         self.project_tree.set_project(self._project)
         self.map_view.clear_all()
         for site in self._project.sites.values():
@@ -998,7 +1023,7 @@ class MainWindow(QMainWindow):
                 site.location.lat,
                 site.location.lon,
             )
-            self._update_site_coverage(site)
+            self._update_site_coverages(site)
         for link in self._project.links.values():
             site_a = self._project.sites.get(link.site_a_id)
             site_b = self._project.sites.get(link.site_b_id)
@@ -1099,7 +1124,7 @@ class MainWindow(QMainWindow):
                 if ok and new_name.strip():
                     site.name = new_name.strip()
                     self.map_view.update_marker_label(site.id, site.name, self._site_kind_label(site.kind.value))
-                    self._update_site_coverage(site)
+                    self._update_site_coverages(site)
 
         self.project_tree.set_project(self._project)
         self._dirty = True
@@ -1204,10 +1229,10 @@ class MainWindow(QMainWindow):
     def _compute_coverage_data(
         self,
         site: Site,
+        antenna: AntennaParams,
         azimuth: float,
         beamwidth: float,
     ) -> dict | None:
-        antenna = site.antenna
         site_elevation = None
         if self._elevation.available:
             site_elevation = self._elevation.get_elevation(site.location.lat, site.location.lon)
@@ -1218,30 +1243,28 @@ class MainWindow(QMainWindow):
         )
         range_km = coverage.range_km
         color = self._coverage_color(antenna.antenna_type)
+        antenna_name = antenna.name or "Антена"
         tooltip = (
-            f"{site.name} | Азимут: {azimuth}° | Сектор: {beamwidth}° | "
+            f"{site.name} | {antenna_name} | Азимут: {azimuth}° | Сектор: {beamwidth}° | "
             f"Gain: {antenna.gain_dbi or '-'} dBi"
         )
-        bands = self._coverage_gradient_bands(site, azimuth, beamwidth, range_km, site_elevation)
+        bands = self._coverage_gradient_bands(site, antenna, azimuth, beamwidth, range_km, site_elevation)
         if bands:
             return {
                 "mode": "bands",
-                "site_id": site.id,
                 "bands": bands,
                 "tooltip": tooltip,
             }
-        points = self._coverage_points_with_dem(site, azimuth, beamwidth, range_km, site_elevation)
+        points = self._coverage_points_with_dem(site, antenna, azimuth, beamwidth, range_km, site_elevation)
         if points:
             return {
                 "mode": "points",
-                "site_id": site.id,
                 "points": points,
                 "color": color,
                 "tooltip": tooltip,
             }
         return {
             "mode": "simple",
-            "site_id": site.id,
             "lat": site.location.lat,
             "lon": site.location.lon,
             "azimuth": azimuth,
@@ -1251,32 +1274,40 @@ class MainWindow(QMainWindow):
             "tooltip": tooltip,
         }
 
-    def _on_coverage_done(self, site_id: str, job_id: int, future) -> None:
+    def _on_coverage_done(self, coverage_id: str, job_id: int, future) -> None:
         try:
             result = future.result()
         except Exception:
             result = None
-        self.coverage_result_ready.emit(site_id, job_id, result)
+        self.coverage_result_ready.emit(coverage_id, job_id, result)
 
-    def _apply_coverage_result(self, site_id: str, job_id: int, result) -> None:
-        if self._coverage_job_for_site.get(site_id) != job_id:
+    def _apply_coverage_result(self, coverage_id: str, job_id: int, result) -> None:
+        if self._coverage_job_for_key.get(coverage_id) != job_id:
             self._set_busy(None)
             return
-        if site_id not in self._project.sites:
+        site_id = coverage_id.split(":", 1)[0]
+        antenna_id = coverage_id.split(":", 1)[1] if ":" in coverage_id else ""
+        site = self._project.sites.get(site_id)
+        if site is None:
+            self._set_busy(None)
+            return
+        antenna = next((a for a in site.antennas if a.id == antenna_id and a.applied), None)
+        if antenna is None:
+            self.map_view.remove_coverage(coverage_id)
             self._set_busy(None)
             return
         if result is None:
-            self.map_view.remove_coverage(site_id)
+            self.map_view.remove_coverage(coverage_id)
             self._set_busy(None)
             return
         mode = result.get("mode")
         if mode == "bands":
-            self.map_view.update_coverage_bands(site_id, result["bands"], result["tooltip"])
+            self.map_view.update_coverage_bands(coverage_id, result["bands"], result["tooltip"])
         elif mode == "points":
-            self.map_view.update_coverage_points(site_id, result["points"], result["color"], result["tooltip"])
+            self.map_view.update_coverage_points(coverage_id, result["points"], result["color"], result["tooltip"])
         else:
             self.map_view.update_coverage(
-                site_id,
+                coverage_id,
                 result["lat"],
                 result["lon"],
                 result["azimuth"],
@@ -1290,12 +1321,23 @@ class MainWindow(QMainWindow):
     def _coverage_points_with_dem(
         self,
         site: Site,
+        antenna: AntennaParams,
         azimuth: float,
         beamwidth: float,
         range_km: float,
         site_elevation: float | None = None,
+        obstruction_limit_m: float = 12.0,
     ) -> list | None:
-        distances = self._coverage_los_distances(site, azimuth, beamwidth, range_km, site_elevation)
+        distances = self._coverage_los_distances(
+            site,
+            antenna,
+            azimuth,
+            beamwidth,
+            range_km,
+            site_elevation,
+            obstruction_limit_m,
+            use_fresnel=False,
+        )
         if not distances:
             return None
         return self._coverage_points_from_distances(site, distances, range_km)
@@ -1303,12 +1345,12 @@ class MainWindow(QMainWindow):
     def _coverage_gradient_bands(
         self,
         site: Site,
+        antenna: AntennaParams,
         azimuth: float,
         beamwidth: float,
         range_km: float,
         site_elevation: float | None = None,
     ) -> list | None:
-        antenna = site.antenna
         freq_ghz = antenna.frequency_ghz
         if freq_ghz is None or freq_ghz <= 0:
             return None
@@ -1344,14 +1386,47 @@ class MainWindow(QMainWindow):
         yellow_range = max(min(yellow_range, max_range), self._coverage_calc.min_range_km)
         red_range = max(min(red_range, max_range), self._coverage_calc.min_range_km)
 
-        distances = self._coverage_los_distances(site, azimuth, beamwidth, max_range, site_elevation)
-        if not distances:
+        distances_red = self._coverage_los_distances(
+            site,
+            antenna,
+            azimuth,
+            beamwidth,
+            max_range,
+            site_elevation,
+            15.0,
+            use_fresnel=False,
+        )
+        if not distances_red:
             return None
+        distances_yellow = self._coverage_los_distances(
+            site,
+            antenna,
+            azimuth,
+            beamwidth,
+            max_range,
+            site_elevation,
+            12.0,
+            use_fresnel=False,
+        )
+        if not distances_yellow:
+            distances_yellow = distances_red
+        distances_green = self._coverage_los_distances(
+            site,
+            antenna,
+            azimuth,
+            beamwidth,
+            max_range,
+            site_elevation,
+            0.0,
+            use_fresnel=True,
+        )
+        if not distances_green:
+            distances_green = distances_yellow
 
         bands = []
-        red_points = self._coverage_points_from_distances(site, distances, red_range)
-        yellow_points = self._coverage_points_from_distances(site, distances, yellow_range)
-        green_points = self._coverage_points_from_distances(site, distances, green_range)
+        red_points = self._coverage_points_from_distances(site, distances_red, red_range)
+        yellow_points = self._coverage_points_from_distances(site, distances_yellow, yellow_range)
+        green_points = self._coverage_points_from_distances(site, distances_green, green_range)
         if red_points:
             bands.append({"color": "#ef4444", "latlngs": red_points})
         if yellow_points:
@@ -1363,10 +1438,13 @@ class MainWindow(QMainWindow):
     def _coverage_los_distances(
         self,
         site: Site,
+        antenna: AntennaParams,
         azimuth: float,
         beamwidth: float,
         range_km: float,
         site_elevation: float | None = None,
+        obstruction_limit_m: float = 0.0,
+        use_fresnel: bool = True,
     ) -> list[tuple[int, float]] | None:
         if not self._elevation.available:
             return None
@@ -1375,12 +1453,12 @@ class MainWindow(QMainWindow):
             elevation = self._elevation.get_elevation(site.location.lat, site.location.lon)
         if elevation is None:
             return None
-        base_height = elevation + (site.antenna.height_m or 0)
-        rx_height_m = site.antenna.rx_height_m
+        base_height = elevation + (antenna.height_m or 0)
+        rx_height_m = antenna.rx_height_m
         if rx_height_m is None:
             rx_height_m = 2.0
         fresnel_factor = 0.6
-        freq_ghz = site.antenna.frequency_ghz
+        freq_ghz = antenna.frequency_ghz
         step_km = max(0.2, range_km / 12)
         distances: list[tuple[int, float]] = []
         start = azimuth - beamwidth / 2
@@ -1430,7 +1508,12 @@ class MainWindow(QMainWindow):
                         los_height = base_height + (target_height - base_height) * (d1 / dist)
                         r1 = 17.32 * ((d1 * d2) / (freq_ghz * dist)) ** 0.5
                         clearance = fresnel_factor * r1
-                        if elev_j > (los_height - clearance):
+                        threshold = (
+                            los_height - clearance + obstruction_limit_m
+                            if use_fresnel
+                            else los_height + obstruction_limit_m
+                        )
+                        if elev_j > threshold:
                             los_ok = False
                             break
                     if not los_ok:

@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Dict, List, Optional
+from uuid import uuid4
 
 
 class SiteKind(str, Enum):
@@ -87,6 +88,9 @@ class Device:
 
 @dataclass
 class AntennaParams:
+    id: str = field(default_factory=lambda: uuid4().hex[:8])
+    name: Optional[str] = None
+    applied: bool = False
     antenna_type: Optional[str] = None
     azimuth_deg: Optional[float] = None
     beamwidth_deg: Optional[float] = None
@@ -111,7 +115,7 @@ class Site:
     location: GeoPoint
     devices: Dict[str, Device] = field(default_factory=dict)
     links: Dict[str, "DeviceLink"] = field(default_factory=dict)
-    antenna: AntennaParams = field(default_factory=AntennaParams)
+    antennas: List[AntennaParams] = field(default_factory=list)
     notes: List[ConfigNote] = field(default_factory=list)
     metadata: Dict[str, str] = field(default_factory=dict)
 

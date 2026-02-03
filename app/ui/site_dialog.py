@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+from pathlib import Path
 from uuid import uuid4
 
 from PySide6.QtCore import QPointF, Qt, QTimer, QUrl
-from PySide6.QtGui import QBrush, QCursor, QDesktopServices, QIntValidator, QPen
+from PySide6.QtGui import QBrush, QColor, QCursor, QDesktopServices, QIntValidator, QPen, QPalette, QPixmap
 from PySide6.QtWidgets import (
+    QApplication,
     QComboBox,
     QDialog,
     QGraphicsEllipseItem,
     QGraphicsLineItem,
+    QGraphicsPixmapItem,
     QGraphicsScene,
     QGraphicsTextItem,
     QGraphicsView,
@@ -39,6 +42,9 @@ class PortHandle(QGraphicsEllipseItem):
 
 
 class DeviceNodeItem(QGraphicsEllipseItem):
+    _icon_cache: dict[str, QPixmap] = {}
+    _icon_dir = Path(__file__).resolve().parent / "icons" / "site_view"
+
     def __init__(self, device: Device, on_port_pressed, on_device_menu) -> None:
         super().__init__(-22, -22, 44, 44)
         self.device = device
@@ -47,8 +53,8 @@ class DeviceNodeItem(QGraphicsEllipseItem):
         self._tooltip_pos = None
         self._on_port_pressed = on_port_pressed
         self._on_device_menu = on_device_menu
-        self.setBrush(QBrush(Qt.GlobalColor.white))
-        self.setPen(QPen(Qt.GlobalColor.black, 1))
+        self.setBrush(QBrush(Qt.GlobalColor.transparent))
+        self.setPen(QPen(Qt.GlobalColor.transparent, 0))
         self.setFlags(
             QGraphicsEllipseItem.GraphicsItemFlag.ItemIsMovable
             | QGraphicsEllipseItem.GraphicsItemFlag.ItemIsSelectable
@@ -56,6 +62,7 @@ class DeviceNodeItem(QGraphicsEllipseItem):
         )
         self.setAcceptHoverEvents(True)
         self.setAcceptedMouseButtons(Qt.MouseButton.LeftButton | Qt.MouseButton.RightButton)
+        self._icon_item = QGraphicsPixmapItem(self)
         label = QGraphicsTextItem(device.name, self)
         label.setPos(-20, 26)
         self._ports = self._create_ports()
@@ -101,12 +108,40 @@ class DeviceNodeItem(QGraphicsEllipseItem):
         super().mousePressEvent(event)
 
     def _apply_status_style(self) -> None:
-        color = {
-            StatusState.UP: Qt.GlobalColor.green,
-            StatusState.DOWN: Qt.GlobalColor.red,
-            StatusState.DEGRADED: Qt.GlobalColor.darkYellow,
-        }.get(self.device.status.state, Qt.GlobalColor.lightGray)
-        self.setBrush(QBrush(color))
+        self._update_icon()
+
+    def _update_icon(self) -> None:
+        base = {
+            DeviceType.ROUTER: "router",
+            DeviceType.SWITCH: "switch",
+            DeviceType.POE_SWITCH: "poe_switch",
+            DeviceType.AP: "ap",
+            DeviceType.REPEATER: "repeater",
+        }.get(self.device.device_type, "router")
+        status = {
+            StatusState.UP: "up",
+            StatusState.DOWN: "down",
+            StatusState.DEGRADED: "down",
+            StatusState.UNKNOWN: "down",
+        }.get(self.device.status.state, "down")
+
+        filename = f"{base}_{status}.png"
+        if base == "poe_switch" and status == "down":
+            filename = "poe_swithc_down.png"
+        path = self._icon_dir / filename
+        if not path.exists() and status != "up":
+            path = self._icon_dir / f"{base}_up.png"
+        if not path.exists():
+            return
+        key = str(path)
+        pixmap = self._icon_cache.get(key)
+        if pixmap is None:
+            pixmap = QPixmap(key)
+            self._icon_cache[key] = pixmap
+        if pixmap.isNull():
+            return
+        self._icon_item.setPixmap(pixmap)
+        self._icon_item.setOffset(-pixmap.width() / 2, -pixmap.height() / 2)
 
     def _create_ports(self) -> dict[str, PortHandle]:
         ports = {
@@ -211,13 +246,13 @@ class SiteDevicesDialog(QDialog):
         super().__init__(parent)
         self._site = site
         self.setWindowTitle(f"Пристрої сайту: {site.name}")
-        self.setStyleSheet("background:#e5e7eb;")
+        self._apply_dialog_style(self)
         self.resize(900, 600)
 
         self._scene = QGraphicsScene(self)
         self._view = NetworkView(self._scene, self)
         self._view.setRenderHints(self._view.renderHints())
-        self._view.setBackgroundBrush(QBrush(Qt.GlobalColor.lightGray))
+        self._view.setBackgroundBrush(QBrush(QApplication.palette().color(QPalette.Window)))
         self._view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._view.customContextMenuRequested.connect(self._open_context_menu)
         self._view.set_drag_handlers(self._on_drag_move, self._on_drag_end)
@@ -241,6 +276,97 @@ class SiteDevicesDialog(QDialog):
 
         self.setLayout(top)
         self._refresh_scene()
+
+    @staticmethod
+    def _apply_dialog_style(widget: QDialog) -> None:
+        palette = QApplication.palette()
+        window_color = palette.color(QPalette.Window)
+        base_color = palette.color(QPalette.Base)
+        text_color = palette.color(QPalette.Text)
+        button_color = palette.color(QPalette.Button)
+        button_text_color = palette.color(QPalette.ButtonText)
+        highlight_color = palette.color(QPalette.Highlight)
+        highlight_text_color = palette.color(QPalette.HighlightedText)
+        mid_color = palette.color(QPalette.Mid)
+        dark_color = palette.color(QPalette.Dark)
+
+        def is_light(color) -> bool:
+            return (0.2126 * color.redF() + 0.7152 * color.greenF() + 0.0722 * color.blueF()) > 0.55
+
+        if is_light(window_color):
+            text_color = QColor("#0f1720")
+            label_color = QColor("#0f1720")
+            base_color = QColor("#f8fafc")
+            border_color = QColor("#94a3b8")
+        else:
+            label_color = text_color
+            border_color = mid_color
+
+        window = window_color.name()
+        base = base_color.name()
+        text = text_color.name()
+        button = button_color.name()
+        button_text = button_text_color.name()
+        highlight = highlight_color.name()
+        highlight_text = highlight_text_color.name()
+        border = border_color.name()
+        label = label_color.name()
+        button_hover = button_color.lighter(112).name()
+        widget.setStyleSheet(
+            """
+            QDialog {{
+              background: {window};
+              color: {text};
+            }}
+            QLabel {{
+              color: {label};
+              font-weight: 600;
+            }}
+            QLineEdit, QComboBox, QTextEdit {{
+              background: {base};
+              color: {text};
+              border: 1px solid {border};
+              border-radius: 6px;
+              padding: 6px;
+            }}
+            QLineEdit:focus, QComboBox:focus, QTextEdit:focus {{
+              border: 1px solid {highlight};
+            }}
+            QComboBox::drop-down {{
+              border-left: 1px solid {border};
+            }}
+            QComboBox QAbstractItemView {{
+              background: {base};
+              color: {text};
+              selection-background-color: {highlight};
+              selection-color: {highlight_text};
+            }}
+            QTextEdit {{
+              padding: 6px;
+            }}
+            QPushButton {{
+              background: {button};
+              color: {button_text};
+              border: 1px solid {border};
+              padding: 6px 12px;
+              border-radius: 8px;
+            }}
+            QPushButton:hover {{
+              background: {button_hover};
+            }}
+            """.format(
+                window=window,
+                base=base,
+                text=text,
+                label=label,
+                button=button,
+                button_text=button_text,
+                highlight=highlight,
+                highlight_text=highlight_text,
+                border=border,
+                button_hover=button_hover,
+            )
+        )
 
     def _refresh_scene(self) -> None:
         self._scene.clear()
@@ -439,6 +565,7 @@ class DeviceFormDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Опис пристрою")
         self.setMinimumWidth(420)
+        SiteDevicesDialog._apply_dialog_style(self)
 
         self._name = QLineEdit(self)
         self._type = QComboBox(self)
@@ -448,7 +575,6 @@ class DeviceFormDialog(QDialog):
             ("PoE комутатор", DeviceType.POE_SWITCH),
             ("Точка доступу", DeviceType.AP),
             ("Ретранслятор", DeviceType.REPEATER),
-            ("Антена", DeviceType.ANTENNA),
         ]
         for label, dtype in device_options:
             self._type.addItem(label, dtype)
@@ -569,6 +695,7 @@ class LinkFormDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Параметри лінка")
         self.setMinimumWidth(320)
+        SiteDevicesDialog._apply_dialog_style(self)
 
         self._link_type = QComboBox(self)
         link_options = [

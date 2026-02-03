@@ -77,21 +77,21 @@ class EirpCalculatorDialog(QDialog):
             field.textChanged.connect(self._update)
 
         intro = QLabel(
-            "Калькулятор оцінює FSPL та потрібний EIRP\n"
-            "для заданої дистанції. Дані надайте згідно специфікації обладнання.",
+            "Калькулятор існує для оцінки FSPL розрахунку EIRP\n"
+            "для заданої дистанції. Додаткова інформація наведена в гайді.",
             self,
         )
         intro.setWordWrap(True)
 
         form = QFormLayout()
         form.addRow(QLabel("Частота (МГц):"), self._frequency)
-        form.addRow(QLabel("Дистанція (км):"), self._distance)
+        form.addRow(QLabel("Необхідна дистанція (км):"), self._distance)
         form.addRow(QLabel("Потужність TX (dBm):"), self._tx_power)
         form.addRow(QLabel("Підсилення TX (dBi):"), self._tx_gain)
         form.addRow(QLabel("Підсилення RX (dBi):"), self._rx_gain)
         form.addRow(QLabel("Чутливість RX (dBm):"), self._rx_sens)
-        form.addRow(QLabel("Втрати (дБ):"), self._losses)
-        form.addRow(QLabel("Margin (дБ):"), self._margin)
+        form.addRow(QLabel("Втрати АФТ (дБ):"), self._losses)
+        form.addRow(QLabel("Закладені втрати (дБ):"), self._margin)
 
         form.addRow(QLabel("FSPL (дБ):"), self._fspl)
         form.addRow(QLabel("EIRP потрібний (dBm):"), self._eirp_required)
@@ -99,6 +99,7 @@ class EirpCalculatorDialog(QDialog):
         form.addRow(QLabel("EIRP статус:"), self._eirp_ok)
 
         formulas = QLabel(
+            "Формули для розрахунків, що використовуються:\n"
             "FSPL = 92.45 + 20·log10(d_km) + 20·log10(f_GHz)\n"
             "EIRP_required = RX_sens + Margin + FSPL + Losses − RX_gain\n"
             "EIRP_actual = Pt + Gt − Losses\n"

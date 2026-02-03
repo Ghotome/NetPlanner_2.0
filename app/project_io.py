@@ -68,7 +68,7 @@ def site_to_dict(site: Site) -> dict[str, Any]:
         "name": site.name,
         "kind": site.kind.value,
         "location": geopoint_to_dict(site.location),
-        "antenna": antenna_to_dict(site.antenna),
+        "antennas": [antenna_to_dict(a) for a in site.antennas],
         "devices": {did: device_to_dict(dev) for did, dev in site.devices.items()},
         "links": {lid: device_link_to_dict(link) for lid, link in site.links.items()},
         "notes": [note_to_dict(n) for n in site.notes],
@@ -83,7 +83,15 @@ def site_from_dict(data: dict[str, Any]) -> Site:
         kind=SiteKind(data.get("kind", "pop")),
         location=geopoint_from_dict(data.get("location", {})),
     )
-    site.antenna = antenna_from_dict(data.get("antenna", {}))
+    antennas_data = data.get("antennas")
+    if isinstance(antennas_data, list):
+        site.antennas = [antenna_from_dict(a) for a in antennas_data]
+    else:
+        legacy = data.get("antenna")
+        if isinstance(legacy, dict) and legacy:
+            migrated = antenna_from_dict(legacy)
+            migrated.applied = True
+            site.antennas = [migrated]
     site.devices = {did: device_from_dict(ddata) for did, ddata in data.get("devices", {}).items()}
     site.links = {lid: device_link_from_dict(ldata) for lid, ldata in data.get("links", {}).items()}
     site.notes = [note_from_dict(n) for n in data.get("notes", [])]
@@ -204,6 +212,9 @@ def device_link_from_dict(data: dict[str, Any]) -> DeviceLink:
 
 def antenna_to_dict(antenna: AntennaParams) -> dict[str, Any]:
     return {
+        "id": antenna.id,
+        "name": antenna.name,
+        "applied": antenna.applied,
         "antenna_type": antenna.antenna_type,
         "azimuth_deg": antenna.azimuth_deg,
         "beamwidth_deg": antenna.beamwidth_deg,
@@ -223,6 +234,9 @@ def antenna_to_dict(antenna: AntennaParams) -> dict[str, Any]:
 
 def antenna_from_dict(data: dict[str, Any]) -> AntennaParams:
     return AntennaParams(
+        id=data.get("id") or AntennaParams().id,
+        name=data.get("name"),
+        applied=bool(data.get("applied", False)),
         antenna_type=data.get("antenna_type"),
         azimuth_deg=data.get("azimuth_deg"),
         beamwidth_deg=data.get("beamwidth_deg"),

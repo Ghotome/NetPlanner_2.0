@@ -37,8 +37,14 @@ class LinkAnalyzer:
             elevations.append(elev if elev is not None else 0.0)
             distances.append(total_km * t)
 
-        start = elevations[0] + (site_a.antenna.height_m or 0.0)
-        end = elevations[-1] + (site_b.antenna.height_m or 0.0)
+        antenna_a = next((a for a in site_a.antennas if a.applied), None) if site_a.antennas else None
+        if antenna_a is None and site_a.antennas:
+            antenna_a = site_a.antennas[0]
+        antenna_b = next((a for a in site_b.antennas if a.applied), None) if site_b.antennas else None
+        if antenna_b is None and site_b.antennas:
+            antenna_b = site_b.antennas[0]
+        start = elevations[0] + (antenna_a.height_m or 0.0 if antenna_a else 0.0)
+        end = elevations[-1] + (antenna_b.height_m or 0.0 if antenna_b else 0.0)
         blocked = False
         max_obstruction = 0.0
         for i in range(1, len(elevations) - 1):

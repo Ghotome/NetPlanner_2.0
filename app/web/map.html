@@ -90,12 +90,6 @@
       let heightMode = false;
       let losMode = false;
       let azimuthMode = false;
-      let rulerMode = false;
-      let rulerStart = null;
-      let rulerTemp = null;
-      let rulerTooltip = null;
-      let rulerTotalKm = 0;
-      const rulerSegments = [];
       let azimuthStart = null;
       let azimuthTemp = null;
       let azimuthTooltip = null;
@@ -378,26 +372,6 @@
         resetAzimuthTemp();
       }
 
-      function setRulerMode(value) {
-        rulerMode = !!value;
-        resetRuler();
-      }
-
-      function resetRuler() {
-        if (rulerTemp) {
-          map.removeLayer(rulerTemp);
-          rulerTemp = null;
-        }
-        if (rulerTooltip) {
-          map.closeTooltip(rulerTooltip);
-          rulerTooltip = null;
-        }
-        rulerSegments.forEach((entry) => entry.layers.forEach((l) => map.removeLayer(l)));
-        rulerSegments.length = 0;
-        rulerStart = null;
-        rulerTotalKm = 0;
-      }
-
       function resetAzimuthTemp() {
         if (azimuthTemp) {
           azimuthTemp.layers.forEach((layer) => map.removeLayer(layer));
@@ -435,9 +409,6 @@
         if (azimuthMode && azimuthStart) {
           updateAzimuthTemp(e.latlng);
         }
-        if (rulerMode && rulerStart) {
-          updateRulerTemp(e.latlng);
-        }
         if (heightMode) {
           if (bridge) { bridge.reportHeight(e.latlng.lat, e.latlng.lng, e.originalEvent.clientX, e.originalEvent.clientY); }
         }
@@ -446,10 +417,6 @@
       map.on('click', (e) => {
         if (azimuthMode) {
           handleAzimuthClick(e.latlng);
-          return;
-        }
-        if (rulerMode) {
-          handleRulerClick(e.latlng);
           return;
         }
         if (!losMode) { return; }
@@ -474,7 +441,6 @@
       window.setHeightMode = setHeightMode;
       window.setLosMode = setLosMode;
       window.setAzimuthMode = setAzimuthMode;
-      window.setRulerMode = setRulerMode;
       window.setElevationVisible = setElevationVisible;
       window.addCoverage = addCoverage;
       window.updateCoverage = updateCoverage;
@@ -491,7 +457,6 @@
         azimuthMeasures.forEach((entry) => entry.layers.forEach((l) => map.removeLayer(l)));
         azimuthMeasures.clear();
         resetAzimuthTemp();
-        resetRuler();
       };
       window.requestElevationPrefetch = requestElevationPrefetch;
 
@@ -559,16 +524,12 @@
         line.addTo(map);
         layers.push(circle, line);
 
-        let name = window.prompt('Назва азимуту:', '');
-        if (name === null) { name = ''; }
-        const safeName = name.trim();
-        const nameLine = safeName ? `${safeName}<br>` : '';
         const label = L.marker(latlng, {
           icon: L.divIcon({
             className: 'azimuth-label',
-            html: `<div style="background: rgba(15,23,32,0.82); color: #ffffff; padding: 8px 14px; border-radius: 10px; font-size: 13px; font-weight: 600; min-width: 160px; text-align: center; white-space: nowrap; box-shadow: 0 8px 16px rgba(0,0,0,0.4);">${nameLine}${az.toFixed(1)}° • ${distanceKm.toFixed(2)} км</div>`,
+            html: `<div style="background: rgba(15,23,32,0.82); color: #ffffff; padding: 6px 10px; border-radius: 8px; font-size: 12px; font-weight: 600; box-shadow: 0 6px 14px rgba(0,0,0,0.35);">${az.toFixed(1)}° • ${distanceKm.toFixed(2)} км</div>`,
           }),
-          interactive: true,
+          interactive: false,
         });
         label.addTo(map);
         layers.push(label);
@@ -639,58 +600,6 @@
             map.closePopup(popup);
           };
         }, 0);
-      }
-
-      function handleRulerClick(latlng) {
-        if (!rulerStart) {
-          rulerStart = latlng;
-          updateRulerTemp(latlng);
-          return;
-        }
-        finalizeRulerSegment(latlng);
-        rulerStart = latlng;
-      }
-
-      function updateRulerTemp(latlng) {
-        const distanceM = map.distance(rulerStart, latlng);
-        if (!rulerTemp) {
-          rulerTemp = L.polyline([rulerStart, latlng], { color: '#38bdf8', weight: 2, dashArray: '6 6' });
-          rulerTemp.addTo(map);
-        } else {
-          rulerTemp.setLatLngs([rulerStart, latlng]);
-        }
-        const totalKm = rulerTotalKm + distanceM / 1000.0;
-        const content = `Відстань: ${totalKm.toFixed(2)} км`;
-        if (!rulerTooltip) {
-          rulerTooltip = L.tooltip({ permanent: false, direction: 'top', offset: [0, -10], opacity: 0.9 })
-            .setLatLng(latlng)
-            .setContent(content)
-            .openOn(map);
-        } else {
-          rulerTooltip.setLatLng(latlng);
-          rulerTooltip.setContent(content);
-        }
-      }
-
-      function finalizeRulerSegment(latlng) {
-        const distanceM = map.distance(rulerStart, latlng);
-        const segmentKm = distanceM / 1000.0;
-        rulerTotalKm += segmentKm;
-
-        const line = L.polyline([rulerStart, latlng], { color: '#0ea5e9', weight: 3 });
-        line.addTo(map);
-
-        const mid = L.latLng((rulerStart.lat + latlng.lat) / 2, (rulerStart.lng + latlng.lng) / 2);
-        const label = L.marker(mid, {
-          icon: L.divIcon({
-            className: 'ruler-label',
-            html: `<div style="background: rgba(15,23,32,0.82); color: #ffffff; padding: 4px 8px; border-radius: 6px; font-size: 11px; font-weight: 600; white-space: nowrap;">${segmentKm.toFixed(2)} км</div>`,
-          }),
-          interactive: false,
-        });
-        label.addTo(map);
-
-        rulerSegments.push({ layers: [line, label] });
       }
     </script>
   </body>

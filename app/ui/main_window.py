@@ -1347,7 +1347,7 @@ class MainWindow(QMainWindow):
         beamwidth: float,
         range_km: float,
         site_elevation: float | None = None,
-        obstruction_limit_m: float = 12.0,
+        obstruction_limit_m: float = 25.0,
     ) -> list | None:
         distances = self._coverage_los_distances(
             site,
@@ -1357,6 +1357,7 @@ class MainWindow(QMainWindow):
             range_km,
             site_elevation,
             obstruction_limit_m,
+            6.0,
             use_fresnel=False,
         )
         if not distances:
@@ -1414,7 +1415,8 @@ class MainWindow(QMainWindow):
             beamwidth,
             max_range,
             site_elevation,
-            15.0,
+            40.0,
+            12.0,
             use_fresnel=False,
         )
         if not distances_red:
@@ -1426,7 +1428,8 @@ class MainWindow(QMainWindow):
             beamwidth,
             max_range,
             site_elevation,
-            12.0,
+            25.0,
+            6.0,
             use_fresnel=False,
         )
         if not distances_yellow:
@@ -1438,6 +1441,7 @@ class MainWindow(QMainWindow):
             beamwidth,
             max_range,
             site_elevation,
+            0.0,
             0.0,
             use_fresnel=True,
         )
@@ -1465,6 +1469,7 @@ class MainWindow(QMainWindow):
         range_km: float,
         site_elevation: float | None = None,
         obstruction_limit_m: float = 0.0,
+        allowed_diffraction_db: float = 0.0,
         use_fresnel: bool = True,
     ) -> list[tuple[int, float]] | None:
         if not self._elevation.available:
@@ -1480,6 +1485,9 @@ class MainWindow(QMainWindow):
             rx_height_m = 2.0
         fresnel_factor = 0.6
         freq_ghz = antenna.frequency_ghz
+        freq_valid = freq_ghz is not None and freq_ghz > 0
+        wavelength_m = 0.3 / freq_ghz if freq_valid else None
+        earth_radius_m = 6371000.0 * 1.1
         step_km = max(0.2, range_km / 12)
         distances: list[tuple[int, float]] = []
         start = azimuth - beamwidth / 2
@@ -1494,52 +1502,52 @@ class MainWindow(QMainWindow):
                 samples.append((dist, elev, lat, lon))
 
             last_ok = None
-            if not freq_ghz or freq_ghz <= 0:
-                max_slope = -1e9
-                for idx, (dist, elev, lat, lon) in enumerate(samples, start=1):
-                    if elev is None:
-                        break
-                    if dist <= 0:
+            base_stride = max(1, len(samples) // 50)
+            for idx, (dist, elev, lat, lon) in enumerate(samples):
+                if dist <= 0:
+                    last_ok = (lat, lon)
+                    continue
+                if elev is None:
+                    break
+                target_height = elev + rx_height_m
+                los_ok = True
+                stride = 1 if idx < base_stride * 2 else base_stride
+                for j in range(0, idx, stride):
+                    d1, elev_j, _, _ = samples[j]
+                    if elev_j is None:
                         continue
-                    target_height = elev + rx_height_m
-                    slope_target = (target_height - base_height) / dist
-                    if max_slope <= slope_target:
-                        last_ok = (lat, lon)
-                    slope_here = (elev - base_height) / dist
-                    if slope_here > max_slope:
-                        max_slope = slope_here
-            else:
-                base_stride = max(1, len(samples) // 50)
-                for idx, (dist, elev, lat, lon) in enumerate(samples):
-                    if dist <= 0:
-                        last_ok = (lat, lon)
+                    d2 = dist - d1
+                    if d2 <= 0:
                         continue
-                    if elev is None:
-                        break
-                    target_height = elev + rx_height_m
-                    los_ok = True
-                    stride = 1 if idx < base_stride * 2 else base_stride
-                    for j in range(0, idx, stride):
-                        d1, elev_j, _, _ = samples[j]
-                        if elev_j is None:
-                            continue
-                        d2 = dist - d1
-                        if d2 <= 0:
-                            continue
-                        los_height = base_height + (target_height - base_height) * (d1 / dist)
+                    los_height = base_height + (target_height - base_height) * (d1 / dist)
+                    clearance = 0.0
+                    if use_fresnel and freq_valid:
                         r1 = 17.32 * ((d1 * d2) / (freq_ghz * dist)) ** 0.5
                         clearance = fresnel_factor * r1
-                        threshold = (
-                            los_height - clearance + obstruction_limit_m
-                            if use_fresnel
-                            else los_height + obstruction_limit_m
-                        )
-                        if elev_j > threshold:
+                    d1_m = d1 * 1000.0
+                    d2_m = d2 * 1000.0
+                    bulge_m = (d1_m * d2_m) / (2.0 * earth_radius_m)
+                    threshold = (
+                        los_height - clearance + obstruction_limit_m
+                        if use_fresnel
+                        else los_height + obstruction_limit_m
+                    )
+                    elev_eff = elev_j + bulge_m
+                    if elev_eff > threshold:
+                        if not freq_valid or not wavelength_m:
                             los_ok = False
                             break
-                    if not los_ok:
-                        break
-                    last_ok = (lat, lon)
+                        h_m = elev_eff - (los_height - clearance)
+                        if h_m <= 0:
+                            continue
+                        v = h_m * (2.0 * (d1_m + d2_m) / (wavelength_m * d1_m * d2_m)) ** 0.5
+                        loss_db = 6.9 + 20.0 * log10(((v - 0.1) ** 2 + 1) ** 0.5 + v - 0.1)
+                        if loss_db > allowed_diffraction_db:
+                            los_ok = False
+                            break
+                if not los_ok:
+                    break
+                last_ok = (lat, lon)
 
             dist_km = 0.0
             if last_ok is not None:

@@ -26,6 +26,7 @@ class AntennaBlock(QWidget):
     apply_requested = Signal(str, dict)
     delete_requested = Signal(str)
     validity_changed = Signal(bool)
+    copy_requested = Signal(dict)
 
     def __init__(self, antenna: AntennaParams | None, index: int, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -86,10 +87,18 @@ class AntennaBlock(QWidget):
         self._calc_required.setVisible(False)
         self._calc_ok.setReadOnly(True)
 
-        self._azimuth.setValidator(QDoubleValidator(0.0, 360.0, 1, self))
-        self._beamwidth.setValidator(QDoubleValidator(0.0, 360.0, 1, self))
-        self._gain.setValidator(QDoubleValidator(0.0, 60.0, 1, self))
-        self._height.setValidator(QDoubleValidator(0.0, 8000.0, 2, self))
+        az_validator = QDoubleValidator(0.0, 360.0, 1, self)
+        az_validator.setLocale(QLocale.c())
+        self._azimuth.setValidator(az_validator)
+        bw_validator = QDoubleValidator(0.0, 360.0, 1, self)
+        bw_validator.setLocale(QLocale.c())
+        self._beamwidth.setValidator(bw_validator)
+        gain_tx_validator = QDoubleValidator(0.0, 60.0, 1, self)
+        gain_tx_validator.setLocale(QLocale.c())
+        self._gain.setValidator(gain_tx_validator)
+        height_tx_validator = QDoubleValidator(0.0, 8000.0, 2, self)
+        height_tx_validator.setLocale(QLocale.c())
+        self._height.setValidator(height_tx_validator)
         freq_validator = QDoubleValidator(0.1, 30000.0, 3, self)
         freq_validator.setLocale(QLocale.c())
         self._frequency.setValidator(freq_validator)
@@ -181,6 +190,10 @@ class AntennaBlock(QWidget):
         self._apply_btn.clicked.connect(self._emit_apply)
         form.addRow(self._apply_btn)
 
+        self._copy_btn = QPushButton("Копіювати антену", self)
+        self._copy_btn.clicked.connect(self._emit_copy)
+        form.addRow(self._copy_btn)
+
         self._delete_btn = QPushButton("Видалити антену", self)
         self._delete_btn.clicked.connect(self._emit_delete)
         form.addRow(self._delete_btn)
@@ -256,6 +269,11 @@ class AntennaBlock(QWidget):
 
     def _emit_delete(self) -> None:
         self.delete_requested.emit(self.antenna_id)
+
+    def _emit_copy(self) -> None:
+        payload = self.to_payload()
+        payload["applied"] = False
+        self.copy_requested.emit(payload)
 
     def set_applied(self, value: bool) -> None:
         self._applied = value
@@ -426,8 +444,12 @@ class InspectorPanel(QWidget):
         self._site_lon = QLineEdit(self)
         self._site_elevation = QLabel("—")
         self._site_notes = QLabel("—")
-        self._site_lat.setValidator(QDoubleValidator(-90.0, 90.0, 6, self))
-        self._site_lon.setValidator(QDoubleValidator(-180.0, 180.0, 6, self))
+        lat_validator = QDoubleValidator(-90.0, 90.0, 6, self)
+        lat_validator.setLocale(QLocale.c())
+        self._site_lat.setValidator(lat_validator)
+        lon_validator = QDoubleValidator(-180.0, 180.0, 6, self)
+        lon_validator.setLocale(QLocale.c())
+        self._site_lon.setValidator(lon_validator)
 
         self._site_apply_basic = QPushButton("Застосувати сайт", self)
         self._site_apply_basic.clicked.connect(self._apply_site_basic_changes)
@@ -613,6 +635,7 @@ class InspectorPanel(QWidget):
         block.apply_requested.connect(self._apply_single_antenna)
         block.delete_requested.connect(self._delete_antenna_block)
         block.validity_changed.connect(lambda _ok: self._update_apply_all_state())
+        block.copy_requested.connect(self._copy_antenna_block)
         self._antenna_blocks.append(block)
         self._antenna_container.addWidget(block)
         self._update_apply_all_state()
@@ -663,6 +686,28 @@ class InspectorPanel(QWidget):
             antennas.append(data)
         self.site_updated.emit(self._current_site_id, {"antennas": antennas})
         self._update_apply_all_state()
+
+    def _copy_antenna_block(self, payload: dict) -> None:
+        if self._current_site_id is None:
+            return
+        new_index = len(self._antenna_blocks) + 1
+        new_antenna = AntennaParams(id=uuid4().hex[:8])
+        new_antenna.name = f"Антена {new_index}"
+        new_antenna.antenna_type = payload.get("antenna_type")
+        new_antenna.azimuth_deg = payload.get("azimuth_deg")
+        new_antenna.beamwidth_deg = payload.get("beamwidth_deg")
+        new_antenna.gain_dbi = payload.get("gain_dbi")
+        new_antenna.height_m = payload.get("height_m")
+        new_antenna.frequency_ghz = payload.get("frequency_ghz")
+        new_antenna.tx_power_dbm = payload.get("tx_power_dbm")
+        new_antenna.mcs = payload.get("mcs")
+        new_antenna.rx_gain_dbi = payload.get("rx_gain_dbi")
+        new_antenna.rx_height_m = payload.get("rx_height_m")
+        new_antenna.rx_sensitivity_dbm = payload.get("rx_sensitivity_dbm")
+        new_antenna.misc_losses_db = payload.get("misc_losses_db")
+        new_antenna.link_margin_db = payload.get("link_margin_db")
+        new_antenna.applied = False
+        self._add_antenna_block(new_antenna, new_index)
 
     def _update_apply_all_state(self) -> None:
         if self._current_site_id is None or not self._antenna_blocks:

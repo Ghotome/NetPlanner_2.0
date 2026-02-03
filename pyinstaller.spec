@@ -46,7 +46,7 @@ exe = EXE(
     a.binaries,
     a.zipfiles,
     a.datas,
-    name="NetPlanner",
+    name="NetPlanner_2.0",
     debug=False,
     strip=False,
     upx=False,

@@ -9,4 +9,4 @@ python -m pip install pyinstaller
 
 pyinstaller -y pyinstaller.spec
 
-echo "Build ready: dist/NetPlanner"
+echo "Build ready: dist/NetPlanner_2.0"

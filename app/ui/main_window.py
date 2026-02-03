@@ -79,6 +79,11 @@ class MainWindow(QMainWindow):
             on_request_rename_site=self._on_map_request_rename_site,
             on_select_node=self._on_map_select_node,
             on_open_site=self._on_map_open_site,
+            on_set_height_mode=self._set_height_mode_from_map,
+            on_set_azimuth_mode=self._set_azimuth_mode_from_map,
+            on_set_ruler_mode=self._set_ruler_mode_from_map,
+            on_set_los_mode=self._set_los_mode_from_map,
+            on_open_eirp=self._open_eirp_calculator,
             parent=self,
         )
 
@@ -194,7 +199,8 @@ class MainWindow(QMainWindow):
         self._eirp_action.triggered.connect(self._open_eirp_calculator)
 
         self._los_action = QAction("LOS", self)
-        self._los_action.triggered.connect(self._start_los_mode)
+        self._los_action.setCheckable(True)
+        self._los_action.toggled.connect(self._toggle_los_mode)
 
     def _confirm_action(self, title: str, message: str) -> bool:
         return (
@@ -229,6 +235,8 @@ class MainWindow(QMainWindow):
             self._los_mode = False
             self._los_points = []
             self.map_view.set_los_mode(False)
+            if self._los_action.isChecked():
+                self._los_action.setChecked(False)
             self.statusBar().clearMessage()
         if enabled and self._ruler_action.isChecked():
             self._ruler_action.setChecked(False)
@@ -245,6 +253,8 @@ class MainWindow(QMainWindow):
             self._los_mode = False
             self._los_points = []
             self.map_view.set_los_mode(False)
+            if self._los_action.isChecked():
+                self._los_action.setChecked(False)
             self.statusBar().clearMessage()
         if enabled and self._azimuth_action.isChecked():
             self._azimuth_action.setChecked(False)
@@ -253,6 +263,18 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Клік — додати відрізок, рухайте курсор для заміру")
         else:
             self.statusBar().clearMessage()
+
+    def _set_height_mode_from_map(self, enabled: bool) -> None:
+        self._height_action.setChecked(enabled)
+
+    def _set_azimuth_mode_from_map(self, enabled: bool) -> None:
+        self._azimuth_action.setChecked(enabled)
+
+    def _set_ruler_mode_from_map(self, enabled: bool) -> None:
+        self._ruler_action.setChecked(enabled)
+
+    def _set_los_mode_from_map(self, enabled: bool) -> None:
+        self._los_action.setChecked(enabled)
 
     def _init_menu_bar(self) -> None:
         menu = self.menuBar()
@@ -268,17 +290,6 @@ class MainWindow(QMainWindow):
 
         edit_menu = menu.addMenu("Правка")
         edit_menu.addAction("Перейменувати", self._rename_selected, "F2")
-
-        view_menu = menu.addMenu("Вигляд")
-        view_menu.addAction(self._elevation_action)
-        view_menu.addAction(self._coverage_action)
-
-        tools_menu = menu.addMenu("Інструменти")
-        tools_menu.addAction(self._height_action)
-        tools_menu.addAction(self._azimuth_action)
-        tools_menu.addAction(self._ruler_action)
-        tools_menu.addAction(self._eirp_action)
-        tools_menu.addAction(self._los_action)
 
         help_menu = menu.addMenu("Довідка")
         help_menu.addAction("Гайд користувача", self._show_user_guide)
@@ -512,16 +523,22 @@ class MainWindow(QMainWindow):
         dialog = EirpCalculatorDialog(antenna, self)
         dialog.exec()
 
-    def _start_los_mode(self) -> None:
-        QMessageBox.information(
-            self,
-            "LOS",
-            "Оберіть 2 точки на мапі для розрахунку траекторії прямої видимості між ними.",
-        )
-        self._los_mode = True
-        self._los_points = []
-        self.map_view.set_los_mode(True)
-        self.statusBar().showMessage("LOS: оберіть 2 точки на мапі")
+    def _toggle_los_mode(self, enabled: bool) -> None:
+        if enabled:
+            QMessageBox.information(
+                self,
+                "LOS",
+                "Оберіть 2 точки на мапі для розрахунку траекторії прямої видимості між ними.",
+            )
+            self._los_mode = True
+            self._los_points = []
+            self.map_view.set_los_mode(True)
+            self.statusBar().showMessage("LOS: оберіть 2 точки на мапі")
+        else:
+            self._los_mode = False
+            self._los_points = []
+            self.map_view.set_los_mode(False)
+            self.statusBar().clearMessage()
 
     def _on_map_click(self, lat: float, lon: float) -> None:
         if not self._los_mode:
@@ -535,6 +552,8 @@ class MainWindow(QMainWindow):
         self._los_points = []
         self.map_view.set_los_mode(False)
         self.statusBar().clearMessage()
+        if self._los_action.isChecked():
+            self._los_action.setChecked(False)
         self._run_los_between_points(a, b)
 
     def _run_los_between_points(self, a: tuple[float, float], b: tuple[float, float]) -> None:

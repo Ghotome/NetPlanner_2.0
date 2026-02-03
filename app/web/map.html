@@ -41,6 +41,61 @@
         justify-content: space-between;
         font-size: 10px;
       }
+      .map-tools {
+        background: rgba(15, 23, 32, 0.75);
+        padding: 6px;
+        border-radius: 8px;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        box-shadow: 0 8px 16px rgba(0,0,0,0.35);
+        z-index: 1000;
+        pointer-events: auto;
+      }
+      .map-tools .tool-btn {
+        width: 28px;
+        height: 28px;
+        border: 1px solid rgba(255,255,255,0.2);
+        border-radius: 6px;
+        background: rgba(255,255,255,0.08);
+        color: #f8fafc;
+        font-weight: 700;
+        font-size: 12px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .map-tools .tool-btn img,
+      .map-instruments .tool-btn img {
+        width: 16px;
+        height: 16px;
+        display: block;
+        filter: drop-shadow(0 1px 2px rgba(0,0,0,0.35));
+      }
+      .map-tools .tool-btn.active {
+        background: rgba(34,197,94,0.3);
+        border-color: rgba(34,197,94,0.6);
+      }
+      .map-instruments {
+        background: rgba(15, 23, 32, 0.75);
+        padding: 6px;
+        border-radius: 8px;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        box-shadow: 0 8px 16px rgba(0,0,0,0.35);
+        position: absolute;
+        left: 10px;
+        top: 55%;
+        transform: translateY(-50%);
+        z-index: 1000;
+        pointer-events: auto;
+      }
+      .map-instruments .tool-btn.active {
+        background: rgba(59,130,246,0.35);
+        border-color: rgba(59,130,246,0.7);
+      }
     </style>
   </head>
   <body>
@@ -78,6 +133,28 @@
         return div;
       };
 
+      const toolsControl = L.control({ position: 'bottomleft' });
+      toolsControl.onAdd = function () {
+        const div = L.DomUtil.create('div', 'map-tools');
+        div.innerHTML = `
+          <button id="tool-elevation" class="tool-btn" title="Шар висот"><img src="../ui/icons/elevation.png" alt="Elevation"></button>
+          <button id="tool-coverage" class="tool-btn" title="Покриття"><img src="../ui/icons/coverage.png" alt="Coverage"></button>
+        `;
+        L.DomEvent.disableClickPropagation(div);
+        return div;
+      };
+      toolsControl.addTo(map);
+
+      const instrumentsContainer = L.DomUtil.create('div', 'map-instruments', map.getContainer());
+      instrumentsContainer.innerHTML = `
+        <button id="tool-height" class="tool-btn" title="Визначити висоту"><img src="../ui/icons/altitude.png" alt="Altitude"></button>
+        <button id="tool-azimuth" class="tool-btn" title="Азимут"><img src="../ui/icons/azimuth.png" alt="Azimuth"></button>
+        <button id="tool-ruler" class="tool-btn" title="Лінійка"><img src="../ui/icons/ruler.png" alt="Ruler"></button>
+        <button id="tool-los" class="tool-btn" title="LOS"><img src="../ui/icons/los.png" alt="LOS"></button>
+        <button id="tool-eirp" class="tool-btn" title="Калькулятор EIRP"><img src="../ui/icons/eirp.png" alt="EIRP"></button>
+      `;
+      L.DomEvent.disableClickPropagation(instrumentsContainer);
+
       map.createPane('coveragePane');
       map.getPane('coveragePane').style.zIndex = 250;
 
@@ -102,6 +179,8 @@
       let azimuthTooltip = null;
       let azimuthMeasureId = 1;
       const azimuthMeasures = new Map();
+      let elevationEnabled = false;
+      let coverageEnabled = true;
       let dragLine = null;
       let dragTooltip = null;
       let dragSourceId = null;
@@ -115,6 +194,83 @@
             cb();
           });
         }
+      }
+
+      function bindToolButtons() {
+        const el = document.getElementById('tool-elevation');
+        const cov = document.getElementById('tool-coverage');
+        const h = document.getElementById('tool-height');
+        const a = document.getElementById('tool-azimuth');
+        const r = document.getElementById('tool-ruler');
+        const l = document.getElementById('tool-los');
+        const e = document.getElementById('tool-eirp');
+        if (el) {
+          el.onclick = () => {
+            setElevationVisible(!elevationEnabled);
+          };
+        }
+        if (cov) {
+          cov.onclick = () => {
+            setCoverageVisible(!coverageEnabled);
+          };
+        }
+        if (h) {
+          h.onclick = () => {
+            if (bridge && bridge.setHeightMode) {
+              bridge.setHeightMode(!heightMode);
+            } else {
+              setAzimuthMode(false);
+              setRulerMode(false);
+              setLosMode(false);
+              setHeightMode(!heightMode);
+            }
+          };
+        }
+        if (a) {
+          a.onclick = () => {
+            if (bridge && bridge.setAzimuthMode) {
+              bridge.setAzimuthMode(!azimuthMode);
+            } else {
+              setHeightMode(false);
+              setRulerMode(false);
+              setLosMode(false);
+              setAzimuthMode(!azimuthMode);
+            }
+          };
+        }
+        if (r) {
+          r.onclick = () => {
+            if (bridge && bridge.setRulerMode) {
+              bridge.setRulerMode(!rulerMode);
+            } else {
+              setHeightMode(false);
+              setAzimuthMode(false);
+              setLosMode(false);
+              setRulerMode(!rulerMode);
+            }
+          };
+        }
+        if (l) {
+          l.onclick = () => {
+            setHeightMode(false);
+            setAzimuthMode(false);
+            setRulerMode(false);
+            if (bridge && bridge.setLosMode) {
+              bridge.setLosMode(!losMode);
+            } else {
+              setLosMode(!losMode);
+            }
+          };
+        }
+        if (e) {
+          e.onclick = () => {
+            if (bridge && bridge.openEirpCalculator) {
+              bridge.openEirpCalculator();
+            }
+          };
+        }
+        updateToolStates();
+        updateInstrumentStates();
       }
 
       function statusColor(status) {
@@ -260,11 +416,31 @@
       }
 
       function setCoverageVisible(enabled) {
+        coverageEnabled = !!enabled;
+        updateToolStates();
         if (enabled) {
           coverageLayer.addTo(map);
         } else {
           map.removeLayer(coverageLayer);
         }
+      }
+
+      function updateToolStates() {
+        const el = document.getElementById('tool-elevation');
+        const cov = document.getElementById('tool-coverage');
+        if (el) { el.classList.toggle('active', elevationEnabled); }
+        if (cov) { cov.classList.toggle('active', coverageEnabled); }
+      }
+
+      function updateInstrumentStates() {
+        const h = document.getElementById('tool-height');
+        const a = document.getElementById('tool-azimuth');
+        const r = document.getElementById('tool-ruler');
+        const l = document.getElementById('tool-los');
+        if (h) { h.classList.toggle('active', heightMode); }
+        if (a) { a.classList.toggle('active', azimuthMode); }
+        if (r) { r.classList.toggle('active', rulerMode); }
+        if (l) { l.classList.toggle('active', losMode); }
       }
 
       function buildCoverageLatLngs(lat, lon, azimuth, beamwidth, rangeKm) {
@@ -368,21 +544,25 @@
 
       function setHeightMode(value) {
         heightMode = !!value;
+        updateInstrumentStates();
       }
 
       function setLosMode(value) {
         losMode = !!value;
+        updateInstrumentStates();
       }
 
       function setAzimuthMode(value) {
         azimuthMode = !!value;
         resetAzimuthTemp();
+        updateInstrumentStates();
       }
 
       function setRulerMode(value) {
         rulerMode = !!value;
         rulerStopped = false;
         resetRuler();
+        updateInstrumentStates();
       }
 
       function resetAzimuthTemp() {
@@ -414,6 +594,8 @@
       }
 
       function setElevationVisible(enabled) {
+        elevationEnabled = !!enabled;
+        updateToolStates();
         if (enabled) {
           elevationLayer.addTo(map);
           if (bridge) { requestElevationPrefetch(); }
@@ -512,7 +694,7 @@
       };
       window.requestElevationPrefetch = requestElevationPrefetch;
 
-      ensureBridgeReady(() => {});
+      ensureBridgeReady(() => { bindToolButtons(); });
 
       function bearingDeg(a, b) {
         const lat1 = a.lat * Math.PI / 180;
@@ -615,7 +797,7 @@
             const tickLabel = L.marker(labelPoint, {
               icon: L.divIcon({
                 className: 'azimuth-tick',
-                html: `<div style="color:#f8fafc;font-size:11px;font-weight:700;padding:1px 4px;background:rgba(15,23,32,0.6);border-radius:4px;box-shadow:0 2px 6px rgba(0,0,0,0.4);">${angle}°</div>`,
+                html: `<div style="color:#f8fafc;font-size:11px;font-weight:700;padding:1px 6px;background:rgba(15,23,32,0.6);border-radius:4px;box-shadow:0 2px 6px rgba(0,0,0,0.4);white-space:nowrap;min-width:28px;text-align:center;">${angle}°</div>`,
               }),
               interactive: false,
             });

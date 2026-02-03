@@ -25,6 +25,11 @@ class MapBridge(QObject):
         on_request_rename_site: Callable[[str], None],
         on_select_node: Callable[[str], None],
         on_open_site: Callable[[str], None],
+        on_set_height_mode: Callable[[bool], None],
+        on_set_azimuth_mode: Callable[[bool], None],
+        on_set_ruler_mode: Callable[[bool], None],
+        on_set_los_mode: Callable[[bool], None],
+        on_open_eirp: Callable[[], None],
     ) -> None:
         super().__init__()
         self._on_show_context_menu = on_show_context_menu
@@ -39,6 +44,11 @@ class MapBridge(QObject):
         self._on_request_rename_site = on_request_rename_site
         self._on_select_node = on_select_node
         self._on_open_site = on_open_site
+        self._on_set_height_mode = on_set_height_mode
+        self._on_set_azimuth_mode = on_set_azimuth_mode
+        self._on_set_ruler_mode = on_set_ruler_mode
+        self._on_set_los_mode = on_set_los_mode
+        self._on_open_eirp = on_open_eirp
 
     @Slot(float, float, int, int)
     def showContextMenu(self, lat: float, lon: float, x: int, y: int) -> None:
@@ -78,6 +88,26 @@ class MapBridge(QObject):
     def openSite(self, site_id: str) -> None:
         self._on_open_site(site_id)
 
+    @Slot(bool)
+    def setHeightMode(self, enabled: bool) -> None:
+        self._on_set_height_mode(enabled)
+
+    @Slot(bool)
+    def setAzimuthMode(self, enabled: bool) -> None:
+        self._on_set_azimuth_mode(enabled)
+
+    @Slot(bool)
+    def setRulerMode(self, enabled: bool) -> None:
+        self._on_set_ruler_mode(enabled)
+
+    @Slot(bool)
+    def setLosMode(self, enabled: bool) -> None:
+        self._on_set_los_mode(enabled)
+
+    @Slot()
+    def openEirpCalculator(self) -> None:
+        self._on_open_eirp()
+
     @Slot(float, float, float, float, int)
     def prefetchElevation(
         self, south: float, west: float, north: float, east: float, zoom: int
@@ -108,6 +138,11 @@ class MapView(QWebEngineView):
         on_request_rename_site: Callable[[str], None],
         on_select_node: Callable[[str], None],
         on_open_site: Callable[[str], None],
+        on_set_height_mode: Callable[[bool], None],
+        on_set_azimuth_mode: Callable[[bool], None],
+        on_set_ruler_mode: Callable[[bool], None],
+        on_set_los_mode: Callable[[bool], None],
+        on_open_eirp: Callable[[], None],
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -124,6 +159,11 @@ class MapView(QWebEngineView):
             on_request_rename_site,
             on_select_node,
             on_open_site,
+            on_set_height_mode,
+            on_set_azimuth_mode,
+            on_set_ruler_mode,
+            on_set_los_mode,
+            on_open_eirp,
         )
         self._channel = QWebChannel(self)
         self._channel.registerObject("bridge", self._bridge)

@@ -24,11 +24,13 @@ from app.domain import AntennaParams, CableType, Link, LinkKind, LinkType, Site,
 
 class AntennaBlock(QWidget):
     apply_requested = Signal(str, dict)
+    delete_requested = Signal(str)
 
     def __init__(self, antenna: AntennaParams | None, index: int, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.antenna_id = antenna.id if antenna else uuid4().hex[:8]
         self._index = index
+        self._applied = antenna.applied if antenna else False
 
         self._toggle_btn = QToolButton(self)
         self._toggle_btn.setCheckable(True)
@@ -159,6 +161,10 @@ class AntennaBlock(QWidget):
         self._apply_btn.clicked.connect(self._emit_apply)
         form.addRow(self._apply_btn)
 
+        self._delete_btn = QPushButton("Видалити антену", self)
+        self._delete_btn.clicked.connect(self._emit_delete)
+        form.addRow(self._delete_btn)
+
         layout = QVBoxLayout(self)
         layout.addLayout(header)
         layout.addWidget(self._content)
@@ -221,9 +227,16 @@ class AntennaBlock(QWidget):
         self._toggle_btn.setArrowType(Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow)
 
     def _emit_apply(self) -> None:
+        self._applied = True
         payload = self.to_payload()
         payload["applied"] = True
         self.apply_requested.emit(self.antenna_id, payload)
+
+    def _emit_delete(self) -> None:
+        self.delete_requested.emit(self.antenna_id)
+
+    def set_applied(self, value: bool) -> None:
+        self._applied = value
 
     def to_payload(self) -> dict:
         name = self._name.text().strip() or f"Антена {self._index}"
@@ -243,7 +256,7 @@ class AntennaBlock(QWidget):
             "rx_sensitivity_dbm": float(self._rx_sens.text()) if self._rx_sens.text().strip() else None,
             "misc_losses_db": float(self._losses.text()) if self._losses.text().strip() else None,
             "link_margin_db": float(self._margin.text()) if self._margin.text().strip() else None,
-            "applied": False,
+            "applied": self._applied,
         }
 
     def _update_eirp_calculator(self) -> None:
@@ -294,6 +307,19 @@ class AntennaBlock(QWidget):
         self._calc_ok.setToolTip(
             f"EIRP_actual: {actual_eirp:.2f} dBm\nEIRP_required: {required_eirp:.2f} dBm"
         )
+
+    @staticmethod
+    def _mhz_to_ghz(text: str) -> float | None:
+        value = text.strip()
+        if not value:
+            return None
+        try:
+            mhz = float(value)
+        except ValueError:
+            return None
+        if mhz <= 0:
+            return None
+        return mhz / 1000.0
 
     @staticmethod
     def _normalize_decimal(field: QLineEdit) -> None:
@@ -513,6 +539,7 @@ class InspectorPanel(QWidget):
         idx = index if index is not None else len(self._antenna_blocks) + 1
         block = AntennaBlock(antenna, idx, self)
         block.apply_requested.connect(self._apply_single_antenna)
+        block.delete_requested.connect(self._delete_antenna_block)
         self._antenna_blocks.append(block)
         self._antenna_container.addWidget(block)
 
@@ -533,8 +560,33 @@ class InspectorPanel(QWidget):
             data = block.to_payload()
             data["name"] = data.get("name") or f"Антена {idx}"
             data["applied"] = True
+            block.set_applied(True)
             antennas.append(data)
         self.site_updated.emit(self._current_site_id, {"antennas": antennas, "apply_all": True})
+
+    def _delete_antenna_block(self, antenna_id: str) -> None:
+        if self._current_site_id is None:
+            return
+        answer = QMessageBox.question(
+            self,
+            "Видалити антену",
+            "Видалити цю антену?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        block = next((b for b in self._antenna_blocks if b.antenna_id == antenna_id), None)
+        if block is None:
+            return
+        self._antenna_container.removeWidget(block)
+        self._antenna_blocks.remove(block)
+        block.deleteLater()
+        antennas = []
+        for idx, b in enumerate(self._antenna_blocks, start=1):
+            data = b.to_payload()
+            data["name"] = data.get("name") or f"Антена {idx}"
+            antennas.append(data)
+        self.site_updated.emit(self._current_site_id, {"antennas": antennas})
 
     def set_site_elevation(self, elevation_m: float | None, available: bool = True) -> None:
         if elevation_m is None:

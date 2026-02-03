@@ -332,7 +332,7 @@ class MainWindow(QMainWindow):
         )
 
     def _about(self) -> None:
-        QMessageBox.information(self, "Про програму", "NetPlaner v2.0")
+        QMessageBox.information(self, "Про програму", "NetPlaner v2.0\nBy R & Mr. GPT")
 
     def _show_user_guide(self) -> None:
         guide_path = Path(__file__).resolve().parents[1] / "USER_GUIDE.md"
@@ -930,7 +930,7 @@ class MainWindow(QMainWindow):
         if kind_value in ("ptp", "ptmp"):
             return (
                 f"Тип: {kind_value}\\n"
-                f"Частота: {link.frequency_ghz or '-'} ГГц\\n"
+                f"Частота: {link.frequency_ghz or '-'} МГц\\n"
                 f"Висота антени: {antenna_height or '-'} м\\n"
                 f"SSID: {link.ssid or '-'}\\n"
                 f"Пароль: {link.password or '-'}\\n"

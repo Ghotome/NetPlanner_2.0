@@ -10,6 +10,8 @@ datas += collect_data_files("PySide6")
 datas += collect_data_files("PySide6.QtWebEngineCore")
 datas += collect_data_files("PySide6.QtWebEngineWidgets")
 datas += [("app/web", "app/web")]
+datas += [("app/ui/icons", "app/ui/icons")]
+datas += [("app/icon.svg", "app/icon.svg")]
 
 binaries = []
 binaries += collect_dynamic_libs("PySide6")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 from dataclasses import replace
 from concurrent.futures import ThreadPoolExecutor
 from math import asin, atan2, cos, log10, radians, sin, sqrt
@@ -17,6 +18,9 @@ from PySide6.QtWidgets import (
     QSplitter,
     QToolTip,
     QTreeWidgetItem,
+    QDialog,
+    QTextEdit,
+    QVBoxLayout,
     QWidget,
 )
 from PySide6.QtGui import QAction, QPalette
@@ -46,7 +50,7 @@ class MainWindow(QMainWindow):
         super().__init__(parent)
         self._project = project
 
-        self.setWindowTitle("Планування мереж")
+        self.setWindowTitle("NetPlanner 2.0")
         self.resize(1280, 720)
         self.setMinimumSize(900, 600)
         self.setWindowFlags(
@@ -191,10 +195,10 @@ class MainWindow(QMainWindow):
         self._ruler_action.setCheckable(True)
         self._ruler_action.toggled.connect(self._toggle_ruler_mode)
 
-        self._eirp_action = QAction("Розрахувати EIRP", self)
+        self._eirp_action = QAction("Калькулятор EIRP", self)
         self._eirp_action.triggered.connect(self._open_eirp_calculator)
 
-        self._los_action = QAction("LOS", self)
+        self._los_action = QAction("Розрахувати пряму видимість", self)
         self._los_action.setCheckable(True)
         self._los_action.toggled.connect(self._toggle_los_mode)
 
@@ -222,7 +226,7 @@ class MainWindow(QMainWindow):
             QToolTip.hideText()
             self.statusBar().clearMessage()
         else:
-            self.statusBar().showMessage("Наведіть курсор на мапу для висоти")
+            self.statusBar().showMessage("Наведіть курсор на точку на мапі для заміру висоти.")
 
     def _toggle_azimuth_mode(self, enabled: bool) -> None:
         if enabled and self._height_action.isChecked():
@@ -238,7 +242,7 @@ class MainWindow(QMainWindow):
             self._ruler_action.setChecked(False)
         self.map_view.set_azimuth_mode(enabled)
         if enabled:
-            self.statusBar().showMessage("Клікніть точку старту, рухайте курсор, клікніть для фіксації")
+            self.statusBar().showMessage("Натисніть ЛКМ, щоб розпочати. Натисніть ЛКМ, щоб завершити вимірювання.")
         else:
             self.statusBar().clearMessage()
 
@@ -256,7 +260,7 @@ class MainWindow(QMainWindow):
             self._azimuth_action.setChecked(False)
         self.map_view.set_ruler_mode(enabled)
         if enabled:
-            self.statusBar().showMessage("Клік — додати відрізок, рухайте курсор для заміру")
+            self.statusBar().showMessage("Натисніть ЛКМ в зоні мапи, щоб додати точку виміру. Натисніть ПКМ, щоб завершити вимірювання.")
         else:
             self.statusBar().clearMessage()
 
@@ -288,6 +292,7 @@ class MainWindow(QMainWindow):
         edit_menu.addAction("Перейменувати", self._rename_selected, "F2")
 
         help_menu = menu.addMenu("Довідка")
+        help_menu.addAction("Гайд користувача", self._show_user_guide)
         help_menu.addAction("Про програму", self._about)
 
     def _apply_styles(self) -> None:
@@ -327,7 +332,23 @@ class MainWindow(QMainWindow):
         )
 
     def _about(self) -> None:
-        QMessageBox.information(self, "Про програму", "Network Planner v1.0.0")
+        QMessageBox.information(self, "Про програму", "NetPlaner v2.0")
+
+    def _show_user_guide(self) -> None:
+        guide_path = Path(__file__).resolve().parents[1] / "USER_GUIDE.md"
+        if not guide_path.exists():
+            QMessageBox.information(self, "Гайд користувача", "Файл USER_GUIDE.md не знайдено.")
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Гайд користувача")
+        dialog.resize(760, 600)
+        text = QTextEdit(dialog)
+        text.setReadOnly(True)
+        text.setPlainText(guide_path.read_text(encoding="utf-8"))
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(text)
+        dialog.setLayout(layout)
+        dialog.exec()
 
     def _on_map_context_menu(self, lat: float, lon: float, x: int, y: int) -> None:
         menu = QMenu(self)

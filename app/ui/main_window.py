@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+from dataclasses import replace
+from concurrent.futures import ThreadPoolExecutor
 from math import asin, atan2, cos, log10, radians, sin, sqrt
 from uuid import uuid4
 
-from PySide6.QtCore import QPoint, Qt, QTimer
+from PySide6.QtCore import QPoint, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -41,6 +43,9 @@ from app.ui.monitoring_panel import MonitoringPanel
 
 
 class MainWindow(QMainWindow):
+    prefetch_finished = Signal(int)
+    coverage_result_ready = Signal(str, int, object)
+
     def __init__(self, project: NetworkProject, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._project = project
@@ -85,6 +90,13 @@ class MainWindow(QMainWindow):
         self._elevation = ElevationProvider()
         self._link_analyzer = LinkAnalyzer(self._elevation)
         self._coverage_calc = CoverageCalculator()
+        self._bg_executor = ThreadPoolExecutor(max_workers=2)
+        self._prefetch_token = 0
+        self._coverage_job_seq = 0
+        self._coverage_job_for_site: dict[str, int] = {}
+        self._busy_count = 0
+        self.prefetch_finished.connect(self._finish_prefetch)
+        self.coverage_result_ready.connect(self._apply_coverage_result)
         self._prefetch_timer = QTimer(self)
         self._prefetch_timer.setSingleShot(True)
         self._prefetch_timer.timeout.connect(self._prefetch_elevation_for_view)
@@ -637,9 +649,13 @@ class MainWindow(QMainWindow):
     def _prefetch_elevation_for_view(self) -> None:
         if self._pending_bounds is None or self._pending_zoom is None:
             return
+        bounds = self._pending_bounds
+        zoom = self._pending_zoom
+        self._prefetch_token += 1
+        token = self._prefetch_token
         self._set_busy("Завантаження висот…")
-        self._elevation.prefetch_tiles(self._pending_bounds, self._pending_zoom)
-        self._set_busy(None)
+        future = self._bg_executor.submit(self._elevation.prefetch_tiles, bounds, zoom)
+        future.add_done_callback(lambda _f, t=token: self.prefetch_finished.emit(t))
 
     def _on_prefetch_elevation(
         self, south: float, west: float, north: float, east: float, zoom: int
@@ -898,53 +914,40 @@ class MainWindow(QMainWindow):
         return r * c
 
     def _update_site_coverage(self, site: Site) -> None:
-        self._set_busy("Розрахунок покриття…")
         antenna = site.antenna
         if antenna is None or antenna.beamwidth_deg is None or antenna.gain_dbi is None:
             self.map_view.remove_coverage(site.id)
-            self._set_busy(None)
             return
         beamwidth = antenna.beamwidth_deg
-        azimuth = antenna.azimuth_deg or 0.0
+        azimuth = (antenna.azimuth_deg or 0.0) % 360.0
         if antenna.antenna_type == "omni":
             beamwidth = 360.0
-        site_elevation = None
-        if self._elevation.available:
-            site_elevation = self._elevation.get_elevation(site.location.lat, site.location.lon)
-        coverage = self._coverage_calc.estimate_range_km(
-            antenna,
-            site_elevation_m=site_elevation,
-            beamwidth_deg=beamwidth,
+        if beamwidth is None:
+            self.map_view.remove_coverage(site.id)
+            return
+        beamwidth = self._clamp_beamwidth(beamwidth)
+        site_snapshot = Site(
+            id=site.id,
+            name=site.name,
+            kind=site.kind,
+            location=GeoPoint(
+                lat=site.location.lat,
+                lon=site.location.lon,
+                altitude_m=site.location.altitude_m,
+            ),
+            antenna=replace(antenna),
         )
-        range_km = coverage.range_km
-        color = self._coverage_color(antenna.antenna_type)
-        tooltip = (
-            f"{site.name} | Азимут: {azimuth}° | Сектор: {beamwidth}° | "
-            f"Gain: {antenna.gain_dbi or '-'} dBi"
-        )
-        bands = self._coverage_gradient_bands(site, azimuth, beamwidth, range_km, site_elevation)
-        if bands:
-            self.map_view.update_coverage_bands(site.id, bands, tooltip)
-        else:
-            points = self._coverage_points_with_dem(site, azimuth, beamwidth, range_km, site_elevation)
-            if points:
-                self.map_view.update_coverage_points(site.id, points, color, tooltip)
-            else:
-                self.map_view.update_coverage(
-                    site.id,
-                    site.location.lat,
-                    site.location.lon,
-                    azimuth,
-                    beamwidth,
-                    range_km,
-                    color,
-                    tooltip,
-                )
-        self._set_busy(None)
+        self._coverage_job_seq += 1
+        job_id = self._coverage_job_seq
+        self._coverage_job_for_site[site.id] = job_id
+        self._set_busy("Розрахунок покриття…")
+        future = self._bg_executor.submit(self._compute_coverage_data, site_snapshot, azimuth, beamwidth)
+        future.add_done_callback(lambda f, sid=site.id, jid=job_id: self._on_coverage_done(sid, jid, f))
 
     def _cleanup_on_close(self) -> None:
         if self._dirty:
             self._autosave()
+        self._bg_executor.shutdown(wait=False)
         self._elevation.clear_cache()
 
     def _new_project(self) -> None:
@@ -1151,13 +1154,119 @@ class MainWindow(QMainWindow):
             "directional": "#f97316",
         }.get(antenna_type or "", "#22c55e")
 
+    @staticmethod
+    def _clamp_beamwidth(value: float) -> float:
+        if value <= 0:
+            return 1.0
+        if value > 360.0:
+            return 360.0
+        return value
+
     def _set_busy(self, message: str | None) -> None:
         if message:
+            was_idle = self._busy_count == 0
+            self._busy_count += 1
             self.statusBar().showMessage(message)
-            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-        else:
+            if was_idle:
+                QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+            return
+        if self._busy_count > 0:
+            self._busy_count -= 1
+        if self._busy_count == 0:
             self.statusBar().clearMessage()
             QApplication.restoreOverrideCursor()
+
+    def _finish_prefetch(self, token: int) -> None:
+        if token != self._prefetch_token:
+            self._set_busy(None)
+            return
+        self._set_busy(None)
+
+    def _compute_coverage_data(
+        self,
+        site: Site,
+        azimuth: float,
+        beamwidth: float,
+    ) -> dict | None:
+        antenna = site.antenna
+        site_elevation = None
+        if self._elevation.available:
+            site_elevation = self._elevation.get_elevation(site.location.lat, site.location.lon)
+        coverage = self._coverage_calc.estimate_range_km(
+            antenna,
+            site_elevation_m=site_elevation,
+            beamwidth_deg=beamwidth,
+        )
+        range_km = coverage.range_km
+        color = self._coverage_color(antenna.antenna_type)
+        tooltip = (
+            f"{site.name} | Азимут: {azimuth}° | Сектор: {beamwidth}° | "
+            f"Gain: {antenna.gain_dbi or '-'} dBi"
+        )
+        bands = self._coverage_gradient_bands(site, azimuth, beamwidth, range_km, site_elevation)
+        if bands:
+            return {
+                "mode": "bands",
+                "site_id": site.id,
+                "bands": bands,
+                "tooltip": tooltip,
+            }
+        points = self._coverage_points_with_dem(site, azimuth, beamwidth, range_km, site_elevation)
+        if points:
+            return {
+                "mode": "points",
+                "site_id": site.id,
+                "points": points,
+                "color": color,
+                "tooltip": tooltip,
+            }
+        return {
+            "mode": "simple",
+            "site_id": site.id,
+            "lat": site.location.lat,
+            "lon": site.location.lon,
+            "azimuth": azimuth,
+            "beamwidth": beamwidth,
+            "range_km": range_km,
+            "color": color,
+            "tooltip": tooltip,
+        }
+
+    def _on_coverage_done(self, site_id: str, job_id: int, future) -> None:
+        try:
+            result = future.result()
+        except Exception:
+            result = None
+        self.coverage_result_ready.emit(site_id, job_id, result)
+
+    def _apply_coverage_result(self, site_id: str, job_id: int, result) -> None:
+        if self._coverage_job_for_site.get(site_id) != job_id:
+            self._set_busy(None)
+            return
+        if site_id not in self._project.sites:
+            self._set_busy(None)
+            return
+        if result is None:
+            self.map_view.remove_coverage(site_id)
+            self._set_busy(None)
+            return
+        mode = result.get("mode")
+        if mode == "bands":
+            self.map_view.update_coverage_bands(site_id, result["bands"], result["tooltip"])
+        elif mode == "points":
+            self.map_view.update_coverage_points(site_id, result["points"], result["color"], result["tooltip"])
+        else:
+            self.map_view.update_coverage(
+                site_id,
+                result["lat"],
+                result["lon"],
+                result["azimuth"],
+                result["beamwidth"],
+                result["range_km"],
+                result["color"],
+                result["tooltip"],
+            )
+        self._set_busy(None)
 
     def _coverage_points_with_dem(
         self,
@@ -1267,32 +1376,47 @@ class MainWindow(QMainWindow):
                 samples.append((dist, elev, lat, lon))
 
             last_ok = None
-            for idx, (dist, elev, lat, lon) in enumerate(samples):
-                if dist <= 0:
-                    last_ok = (lat, lon)
-                    continue
-                if elev is None:
-                    break
-                target_height = elev + rx_height_m
-                los_ok = True
-                for j in range(idx):
-                    d1, elev_j, _, _ = samples[j]
-                    if elev_j is None:
+            if not freq_ghz or freq_ghz <= 0:
+                max_slope = -1e9
+                for idx, (dist, elev, lat, lon) in enumerate(samples, start=1):
+                    if elev is None:
+                        break
+                    if dist <= 0:
                         continue
-                    d2 = dist - d1
-                    if d2 <= 0:
+                    target_height = elev + rx_height_m
+                    slope_target = (target_height - base_height) / dist
+                    if max_slope <= slope_target:
+                        last_ok = (lat, lon)
+                    slope_here = (elev - base_height) / dist
+                    if slope_here > max_slope:
+                        max_slope = slope_here
+            else:
+                base_stride = max(1, len(samples) // 50)
+                for idx, (dist, elev, lat, lon) in enumerate(samples):
+                    if dist <= 0:
+                        last_ok = (lat, lon)
                         continue
-                    los_height = base_height + (target_height - base_height) * (d1 / dist)
-                    clearance = 0.0
-                    if freq_ghz and freq_ghz > 0:
+                    if elev is None:
+                        break
+                    target_height = elev + rx_height_m
+                    los_ok = True
+                    stride = 1 if idx < base_stride * 2 else base_stride
+                    for j in range(0, idx, stride):
+                        d1, elev_j, _, _ = samples[j]
+                        if elev_j is None:
+                            continue
+                        d2 = dist - d1
+                        if d2 <= 0:
+                            continue
+                        los_height = base_height + (target_height - base_height) * (d1 / dist)
                         r1 = 17.32 * ((d1 * d2) / (freq_ghz * dist)) ** 0.5
                         clearance = fresnel_factor * r1
-                    if elev_j > (los_height - clearance):
-                        los_ok = False
+                        if elev_j > (los_height - clearance):
+                            los_ok = False
+                            break
+                    if not los_ok:
                         break
-                if not los_ok:
-                    break
-                last_ok = (lat, lon)
+                    last_ok = (lat, lon)
 
             dist_km = 0.0
             if last_ok is not None:

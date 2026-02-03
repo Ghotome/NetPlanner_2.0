@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import math
+import threading
+from collections import OrderedDict
 from pathlib import Path
 from typing import Optional
 from urllib.request import urlopen
@@ -14,13 +16,23 @@ except Exception:  # pragma: no cover - optional dependency
 class ElevationProvider:
     """Simple DEM provider using Mapzen Terrarium tiles."""
 
-    def __init__(self, cache_dir: Path | str | None = None, zoom: int = 12) -> None:
+    def __init__(
+        self,
+        cache_dir: Path | str | None = None,
+        zoom: int = 12,
+        tile_cache_size: int = 256,
+    ) -> None:
         self.zoom = zoom
         self.cache_dir = Path(cache_dir or Path(__file__).resolve().parents[1] / "cache" / "elevation")
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.available = Image is not None
+        self._tile_cache: OrderedDict[tuple[int, int, int], Image.Image] = OrderedDict()
+        self._tile_cache_size = max(0, tile_cache_size)
+        self._tile_lock = threading.Lock()
 
     def clear_cache(self) -> None:
+        with self._tile_lock:
+            self._tile_cache.clear()
         if not self.cache_dir.exists():
             return
         for path in self.cache_dir.rglob("*"):
@@ -41,12 +53,31 @@ class ElevationProvider:
         if Image is None:
             return None
         tile_x, tile_y, px, py = self._tile_and_pixel(lat, lon, self.zoom)
-        tile_path = self.cache_dir / str(self.zoom) / str(tile_x) / f"{tile_y}.png"
+        tile = self._get_tile(self.zoom, tile_x, tile_y)
+        if tile is None:
+            return None
+        try:
+            r, g, b = tile.getpixel((px, py))
+            return (r * 256 + g + b / 256) - 32768
+        except Exception:
+            return None
+
+    def _get_tile(self, zoom: int, tile_x: int, tile_y: int) -> Optional["Image.Image"]:
+        if Image is None:
+            return None
+        key = (zoom, tile_x, tile_y)
+        with self._tile_lock:
+            cached = self._tile_cache.get(key)
+            if cached is not None:
+                self._tile_cache.move_to_end(key)
+                return cached
+
+        tile_path = self.cache_dir / str(zoom) / str(tile_x) / f"{tile_y}.png"
         if not tile_path.exists():
             tile_path.parent.mkdir(parents=True, exist_ok=True)
             url = (
                 "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/"
-                f"{self.zoom}/{tile_x}/{tile_y}.png"
+                f"{zoom}/{tile_x}/{tile_y}.png"
             )
             try:
                 with urlopen(url, timeout=10) as response:
@@ -55,11 +86,17 @@ class ElevationProvider:
                 return None
         try:
             with Image.open(tile_path) as img:
-                img = img.convert("RGB")
-                r, g, b = img.getpixel((px, py))
-                return (r * 256 + g + b / 256) - 32768
+                rgb = img.convert("RGB")
+                rgb.load()
         except Exception:
             return None
+
+        if self._tile_cache_size > 0:
+            with self._tile_lock:
+                self._tile_cache[key] = rgb
+                if len(self._tile_cache) > self._tile_cache_size:
+                    self._tile_cache.popitem(last=False)
+        return rgb
 
     @staticmethod
     def _tile_and_pixel(lat: float, lon: float, zoom: int) -> tuple[int, int, int, int]:

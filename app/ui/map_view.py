@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Callable
+import json
 
 from PySide6.QtCore import QObject, QUrl, Slot
 from PySide6.QtWebChannel import QWebChannel
@@ -193,8 +194,10 @@ class MapView(QWebEngineView):
         )
 
     def update_coverage_bands(self, site_id: str, bands: list, tooltip: str) -> None:
+        bands_json = json.dumps(bands, ensure_ascii=False)
+        tooltip_json = json.dumps(tooltip, ensure_ascii=False)
         self.page().runJavaScript(
-            f"updateCoverageBands({site_id!r}, {bands!r}, {tooltip!r});"
+            f"updateCoverageBands({site_id!r}, {bands_json}, {tooltip_json});"
         )
 
     def remove_coverage(self, site_id: str) -> None:

@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
@@ -241,9 +242,19 @@ class InspectorPanel(QWidget):
         link_layout.addRow(self._apply_btn)
         link_layout.addRow(self._analyze_btn)
 
+        content = QWidget(self)
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.addWidget(self._site_group)
+        content_layout.addWidget(self._link_group)
+        content_layout.addStretch(1)
+
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(content)
+
         layout = QVBoxLayout(self)
-        layout.addWidget(self._site_group)
-        layout.addWidget(self._link_group)
+        layout.addWidget(scroll)
         self._link_group.setVisible(False)
         self._current_site_id: str | None = None
 

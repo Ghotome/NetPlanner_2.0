@@ -241,6 +241,12 @@ class MapView(QWebEngineView):
     def set_los_mode(self, enabled: bool) -> None:
         self.page().runJavaScript(f"setLosMode({str(enabled).lower()});")
 
+    def set_azimuth_mode(self, enabled: bool) -> None:
+        self.page().runJavaScript(f"setAzimuthMode({str(enabled).lower()});")
+
+    def set_ruler_mode(self, enabled: bool) -> None:
+        self.page().runJavaScript(f"setRulerMode({str(enabled).lower()});")
+
     def update_link_meta(
         self, link_id: str, label: str, kind: str, info: str, distance_km: float | None
     ) -> None:

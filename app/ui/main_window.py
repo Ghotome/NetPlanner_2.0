@@ -47,6 +47,14 @@ class MainWindow(QMainWindow):
 
         self.setWindowTitle("Планування мереж")
         self.resize(1280, 720)
+        self.setMinimumSize(900, 600)
+        self.setWindowFlags(
+            self.windowFlags()
+            | Qt.WindowType.Window
+            | Qt.WindowType.WindowMinimizeButtonHint
+            | Qt.WindowType.WindowMaximizeButtonHint
+            | Qt.WindowType.WindowCloseButtonHint
+        )
 
         self.project_tree = ProjectTree(self)
         self.project_tree.set_project(project)
@@ -162,6 +170,14 @@ class MainWindow(QMainWindow):
         self._height_action.setCheckable(True)
         self._height_action.toggled.connect(self._toggle_height_mode)
 
+        self._azimuth_action = QAction("Азимут", self)
+        self._azimuth_action.setCheckable(True)
+        self._azimuth_action.toggled.connect(self._toggle_azimuth_mode)
+
+        self._ruler_action = QAction("Лінійка", self)
+        self._ruler_action.setCheckable(True)
+        self._ruler_action.toggled.connect(self._toggle_ruler_mode)
+
         self._eirp_action = QAction("Розрахувати EIRP", self)
         self._eirp_action.triggered.connect(self._open_eirp_calculator)
 
@@ -194,6 +210,38 @@ class MainWindow(QMainWindow):
         else:
             self.statusBar().showMessage("Наведіть курсор на мапу для висоти")
 
+    def _toggle_azimuth_mode(self, enabled: bool) -> None:
+        if enabled and self._height_action.isChecked():
+            self._height_action.setChecked(False)
+        if enabled and self._los_mode:
+            self._los_mode = False
+            self._los_points = []
+            self.map_view.set_los_mode(False)
+            self.statusBar().clearMessage()
+        if enabled and self._ruler_action.isChecked():
+            self._ruler_action.setChecked(False)
+        self.map_view.set_azimuth_mode(enabled)
+        if enabled:
+            self.statusBar().showMessage("Клікніть точку старту, рухайте курсор, клікніть для фіксації")
+        else:
+            self.statusBar().clearMessage()
+
+    def _toggle_ruler_mode(self, enabled: bool) -> None:
+        if enabled and self._height_action.isChecked():
+            self._height_action.setChecked(False)
+        if enabled and self._los_mode:
+            self._los_mode = False
+            self._los_points = []
+            self.map_view.set_los_mode(False)
+            self.statusBar().clearMessage()
+        if enabled and self._azimuth_action.isChecked():
+            self._azimuth_action.setChecked(False)
+        self.map_view.set_ruler_mode(enabled)
+        if enabled:
+            self.statusBar().showMessage("Клік — додати відрізок, рухайте курсор для заміру")
+        else:
+            self.statusBar().clearMessage()
+
     def _init_menu_bar(self) -> None:
         menu = self.menuBar()
         menu.setNativeMenuBar(False)
@@ -215,6 +263,8 @@ class MainWindow(QMainWindow):
 
         tools_menu = menu.addMenu("Інструменти")
         tools_menu.addAction(self._height_action)
+        tools_menu.addAction(self._azimuth_action)
+        tools_menu.addAction(self._ruler_action)
         tools_menu.addAction(self._eirp_action)
         tools_menu.addAction(self._los_action)
 

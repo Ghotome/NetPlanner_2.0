@@ -89,6 +89,18 @@
       let linkMode = false;
       let heightMode = false;
       let losMode = false;
+      let azimuthMode = false;
+      let rulerMode = false;
+      let rulerStart = null;
+      let rulerTemp = null;
+      let rulerTooltip = null;
+      let rulerTotalKm = 0;
+      const rulerSegments = [];
+      let azimuthStart = null;
+      let azimuthTemp = null;
+      let azimuthTooltip = null;
+      let azimuthMeasureId = 1;
+      const azimuthMeasures = new Map();
       let dragLine = null;
       let dragTooltip = null;
       let dragSourceId = null;
@@ -361,6 +373,43 @@
         losMode = !!value;
       }
 
+      function setAzimuthMode(value) {
+        azimuthMode = !!value;
+        resetAzimuthTemp();
+      }
+
+      function setRulerMode(value) {
+        rulerMode = !!value;
+        resetRuler();
+      }
+
+      function resetRuler() {
+        if (rulerTemp) {
+          map.removeLayer(rulerTemp);
+          rulerTemp = null;
+        }
+        if (rulerTooltip) {
+          map.closeTooltip(rulerTooltip);
+          rulerTooltip = null;
+        }
+        rulerSegments.forEach((entry) => entry.layers.forEach((l) => map.removeLayer(l)));
+        rulerSegments.length = 0;
+        rulerStart = null;
+        rulerTotalKm = 0;
+      }
+
+      function resetAzimuthTemp() {
+        if (azimuthTemp) {
+          azimuthTemp.layers.forEach((layer) => map.removeLayer(layer));
+          azimuthTemp = null;
+        }
+        if (azimuthTooltip) {
+          map.closeTooltip(azimuthTooltip);
+          azimuthTooltip = null;
+        }
+        azimuthStart = null;
+      }
+
       function setElevationVisible(enabled) {
         if (enabled) {
           elevationLayer.addTo(map);
@@ -383,11 +432,26 @@
       });
 
       map.on('mousemove', (e) => {
-        if (!heightMode) { return; }
-        if (bridge) { bridge.reportHeight(e.latlng.lat, e.latlng.lng, e.originalEvent.clientX, e.originalEvent.clientY); }
+        if (azimuthMode && azimuthStart) {
+          updateAzimuthTemp(e.latlng);
+        }
+        if (rulerMode && rulerStart) {
+          updateRulerTemp(e.latlng);
+        }
+        if (heightMode) {
+          if (bridge) { bridge.reportHeight(e.latlng.lat, e.latlng.lng, e.originalEvent.clientX, e.originalEvent.clientY); }
+        }
       });
 
       map.on('click', (e) => {
+        if (azimuthMode) {
+          handleAzimuthClick(e.latlng);
+          return;
+        }
+        if (rulerMode) {
+          handleRulerClick(e.latlng);
+          return;
+        }
         if (!losMode) { return; }
         if (bridge) { bridge.mapClick(e.latlng.lat, e.latlng.lng); }
       });
@@ -409,6 +473,8 @@
       window.setLinkMode = setLinkMode;
       window.setHeightMode = setHeightMode;
       window.setLosMode = setLosMode;
+      window.setAzimuthMode = setAzimuthMode;
+      window.setRulerMode = setRulerMode;
       window.setElevationVisible = setElevationVisible;
       window.addCoverage = addCoverage;
       window.updateCoverage = updateCoverage;
@@ -422,10 +488,210 @@
         links.clear();
         coverages.forEach((c) => coverageLayer.removeLayer(c));
         coverages.clear();
+        azimuthMeasures.forEach((entry) => entry.layers.forEach((l) => map.removeLayer(l)));
+        azimuthMeasures.clear();
+        resetAzimuthTemp();
+        resetRuler();
       };
       window.requestElevationPrefetch = requestElevationPrefetch;
 
       ensureBridgeReady(() => {});
+
+      function bearingDeg(a, b) {
+        const lat1 = a.lat * Math.PI / 180;
+        const lat2 = b.lat * Math.PI / 180;
+        const dLon = (b.lng - a.lng) * Math.PI / 180;
+        const y = Math.sin(dLon) * Math.cos(lat2);
+        const x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLon);
+        let brng = Math.atan2(y, x) * 180 / Math.PI;
+        brng = (brng + 360) % 360;
+        return brng;
+      }
+
+      function handleAzimuthClick(latlng) {
+        if (!azimuthStart) {
+          azimuthStart = latlng;
+          updateAzimuthTemp(latlng);
+          return;
+        }
+        finalizeAzimuthMeasure(latlng);
+        azimuthStart = null;
+      }
+
+      function updateAzimuthTemp(latlng) {
+        if (!azimuthStart) { return; }
+        const distanceM = map.distance(azimuthStart, latlng);
+        if (!azimuthTemp) {
+          const circle = L.circle(azimuthStart, { radius: distanceM, color: '#22c55e', weight: 3, fillOpacity: 0.07 });
+          const line = L.polyline([azimuthStart, latlng], { color: '#22c55e', weight: 3 });
+          circle.addTo(map);
+          line.addTo(map);
+          azimuthTemp = { layers: [circle, line], circle, line };
+        } else {
+          azimuthTemp.circle.setRadius(distanceM);
+          azimuthTemp.line.setLatLngs([azimuthStart, latlng]);
+        }
+        const az = bearingDeg(azimuthStart, latlng);
+        const distanceKm = distanceM / 1000.0;
+        const content = `Азимут: ${az.toFixed(1)}°<br>Дистанція: ${distanceKm.toFixed(2)} км`;
+        if (!azimuthTooltip) {
+          azimuthTooltip = L.tooltip({ permanent: false, direction: 'top', offset: [0, -10], opacity: 0.9 })
+            .setLatLng(latlng)
+            .setContent(content)
+            .openOn(map);
+        } else {
+          azimuthTooltip.setLatLng(latlng);
+          azimuthTooltip.setContent(content);
+        }
+      }
+
+      function finalizeAzimuthMeasure(latlng) {
+        if (!azimuthStart) { return; }
+        const distanceM = map.distance(azimuthStart, latlng);
+        const az = bearingDeg(azimuthStart, latlng);
+        const distanceKm = distanceM / 1000.0;
+        const id = `az-${azimuthMeasureId++}`;
+        const layers = [];
+
+        const circle = L.circle(azimuthStart, { radius: distanceM, color: '#22c55e', weight: 3, fillOpacity: 0.07 });
+        const line = L.polyline([azimuthStart, latlng], { color: '#22c55e', weight: 3 });
+        circle.addTo(map);
+        line.addTo(map);
+        layers.push(circle, line);
+
+        let name = window.prompt('Назва азимуту:', '');
+        if (name === null) { name = ''; }
+        const safeName = name.trim();
+        const nameLine = safeName ? `${safeName}<br>` : '';
+        const label = L.marker(latlng, {
+          icon: L.divIcon({
+            className: 'azimuth-label',
+            html: `<div style="background: rgba(15,23,32,0.82); color: #ffffff; padding: 8px 14px; border-radius: 10px; font-size: 13px; font-weight: 600; min-width: 160px; text-align: center; white-space: nowrap; box-shadow: 0 8px 16px rgba(0,0,0,0.4);">${nameLine}${az.toFixed(1)}° • ${distanceKm.toFixed(2)} км</div>`,
+          }),
+          interactive: true,
+        });
+        label.addTo(map);
+        layers.push(label);
+
+        for (let angle = 0; angle < 360; angle += 1) {
+          let lengthMul = 1.01;
+          let innerMul = 0.985;
+          let weight = 1;
+          let color = '#94a3b8';
+          let opacity = 0.7;
+          if (angle % 90 === 0) {
+            lengthMul = 1.04;
+            innerMul = 0.96;
+            weight = 2;
+            color = '#f1f5f9';
+            opacity = 0.9;
+          } else if (angle % 10 === 0) {
+            lengthMul = 1.03;
+            innerMul = 0.97;
+            weight = 1.5;
+            color = '#e2e8f0';
+            opacity = 0.85;
+          }
+          const inner = destinationPoint(azimuthStart, angle, (distanceM / 1000.0) * innerMul);
+          const outer = destinationPoint(azimuthStart, angle, (distanceM / 1000.0) * lengthMul);
+          const tick = L.polyline([inner, outer], { color: color, weight: weight, opacity: opacity });
+          tick.addTo(map);
+          layers.push(tick);
+          if (angle % 90 === 0 || angle % 30 === 0) {
+            const labelPoint = destinationPoint(azimuthStart, angle, (distanceM / 1000.0) * 1.06);
+            const tickLabel = L.marker(labelPoint, {
+              icon: L.divIcon({
+                className: 'azimuth-tick',
+                html: `<div style="color:#e2e8f0;font-size:9px;">${angle}°</div>`,
+              }),
+              interactive: false,
+            });
+            tickLabel.addTo(map);
+            layers.push(tickLabel);
+          }
+        }
+
+        layers.forEach((layer) => {
+          layer.on('contextmenu', (e) => {
+            L.DomEvent.stop(e);
+            showAzimuthDeletePopup(id, e.latlng);
+          });
+        });
+
+        azimuthMeasures.set(id, { layers });
+        resetAzimuthTemp();
+      }
+
+      function showAzimuthDeletePopup(id, latlng) {
+        const popup = L.popup({ closeButton: true })
+          .setLatLng(latlng)
+          .setContent(`<button id="del-${id}" style="padding:4px 8px;">Видалити об'єкт</button>`)
+          .openOn(map);
+        setTimeout(() => {
+          const btn = document.getElementById(`del-${id}`);
+          if (!btn) { return; }
+          btn.onclick = () => {
+            const entry = azimuthMeasures.get(id);
+            if (entry) {
+              entry.layers.forEach((layer) => map.removeLayer(layer));
+              azimuthMeasures.delete(id);
+            }
+            map.closePopup(popup);
+          };
+        }, 0);
+      }
+
+      function handleRulerClick(latlng) {
+        if (!rulerStart) {
+          rulerStart = latlng;
+          updateRulerTemp(latlng);
+          return;
+        }
+        finalizeRulerSegment(latlng);
+        rulerStart = latlng;
+      }
+
+      function updateRulerTemp(latlng) {
+        const distanceM = map.distance(rulerStart, latlng);
+        if (!rulerTemp) {
+          rulerTemp = L.polyline([rulerStart, latlng], { color: '#38bdf8', weight: 2, dashArray: '6 6' });
+          rulerTemp.addTo(map);
+        } else {
+          rulerTemp.setLatLngs([rulerStart, latlng]);
+        }
+        const totalKm = rulerTotalKm + distanceM / 1000.0;
+        const content = `Відстань: ${totalKm.toFixed(2)} км`;
+        if (!rulerTooltip) {
+          rulerTooltip = L.tooltip({ permanent: false, direction: 'top', offset: [0, -10], opacity: 0.9 })
+            .setLatLng(latlng)
+            .setContent(content)
+            .openOn(map);
+        } else {
+          rulerTooltip.setLatLng(latlng);
+          rulerTooltip.setContent(content);
+        }
+      }
+
+      function finalizeRulerSegment(latlng) {
+        const distanceM = map.distance(rulerStart, latlng);
+        const segmentKm = distanceM / 1000.0;
+        rulerTotalKm += segmentKm;
+
+        const line = L.polyline([rulerStart, latlng], { color: '#0ea5e9', weight: 3 });
+        line.addTo(map);
+
+        const mid = L.latLng((rulerStart.lat + latlng.lat) / 2, (rulerStart.lng + latlng.lng) / 2);
+        const label = L.marker(mid, {
+          icon: L.divIcon({
+            className: 'ruler-label',
+            html: `<div style="background: rgba(15,23,32,0.82); color: #ffffff; padding: 4px 8px; border-radius: 6px; font-size: 11px; font-weight: 600; white-space: nowrap;">${segmentKm.toFixed(2)} км</div>`,
+          }),
+          interactive: false,
+        });
+        label.addTo(map);
+
+        rulerSegments.push({ layers: [line, label] });
+      }
     </script>
   </body>
 </html>

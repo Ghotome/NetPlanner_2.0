@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+import os
 import sys
 import time
 from collections import deque
@@ -77,7 +78,10 @@ class PingChecker(QObject):
         ip = device.ip_address
         cmd = self._ping_command(ip, self._ping_count)
         try:
-            out = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+            env = os.environ.copy()
+            env["LC_ALL"] = "C"
+            env["LANG"] = "C"
+            out = subprocess.run(cmd, capture_output=True, text=True, timeout=20, env=env)
             output = out.stdout + out.stderr
             received = self._parse_received(output)
             rtt = self._parse_rtt(output) or 0.0

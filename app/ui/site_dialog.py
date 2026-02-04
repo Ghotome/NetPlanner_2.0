@@ -4,7 +4,18 @@ from pathlib import Path
 from uuid import uuid4
 
 from PySide6.QtCore import QPointF, Qt, QTimer, QUrl
-from PySide6.QtGui import QBrush, QColor, QCursor, QDesktopServices, QIntValidator, QPen, QPalette, QPixmap
+from PySide6.QtGui import (
+    QBrush,
+    QColor,
+    QCursor,
+    QDesktopServices,
+    QIntValidator,
+    QPen,
+    QPalette,
+    QPixmap,
+    QRegularExpressionValidator,
+)
+from PySide6.QtCore import QRegularExpression
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -26,6 +37,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 import subprocess
+import ipaddress
 import sys
 
 from app.domain import CableType, Device, DeviceLink, DeviceType, LinkType, Site, StatusState
@@ -418,27 +430,18 @@ class SiteDevicesDialog(QDialog):
         open_web = menu.addAction("Відкрити WebFig")
         open_ssh = menu.addAction("Відкрити SSH")
         menu.addSeparator()
-        status_up = menu.addAction("Статус: UP")
-        status_down = menu.addAction("Статус: DOWN")
-        status_deg = menu.addAction("Статус: DEGRADED")
-        toggle_uplink = menu.addAction("Перемкнути uplink")
+        edit_device = menu.addAction("Редагувати")
         delete_device = menu.addAction("Видалити пристрій")
         chosen = menu.exec(screen_pos)
         if chosen == open_web:
             self._open_webfig(item.device)
         elif chosen == open_ssh:
             self._open_ssh(item.device)
-        elif chosen == status_up:
-            item.device.status.state = StatusState.UP
-            item.device.metadata["manual_status"] = True
-        elif chosen == status_down:
-            item.device.status.state = StatusState.DOWN
-            item.device.metadata["manual_status"] = True
-        elif chosen == status_deg:
-            item.device.status.state = StatusState.DEGRADED
-            item.device.metadata["manual_status"] = True
-        elif chosen == toggle_uplink:
-            item.device.is_uplink = not item.device.is_uplink
+        elif chosen == edit_device:
+            pos = item.scenePos()
+            dialog = DeviceFormDialog(self, pos.x(), pos.y(), device=item.device)
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                dialog.apply_to_device(item.device)
         elif chosen == delete_device:
             if self._confirm_action("Підтвердження", f"Видалити пристрій '{item.device.name}'?"):
                 self._site.remove_device(item.device.id)
@@ -561,7 +564,7 @@ class SiteDevicesDialog(QDialog):
 
 
 class DeviceFormDialog(QDialog):
-    def __init__(self, parent=None, pos_x: float = 0.0, pos_y: float = 0.0) -> None:
+    def __init__(self, parent=None, pos_x: float = 0.0, pos_y: float = 0.0, device: Device | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Опис пристрою")
         self.setMinimumWidth(420)
@@ -579,7 +582,14 @@ class DeviceFormDialog(QDialog):
         for label, dtype in device_options:
             self._type.addItem(label, dtype)
         self._ip = QLineEdit(self)
+        ip_validator = QRegularExpressionValidator(
+            QRegularExpression(r"^(\d{1,3}\.){0,3}\d{0,3}$"), self
+        )
+        self._ip.setValidator(ip_validator)
         self._port_rows = []
+        self._uplink = QComboBox(self)
+        self._uplink.addItem("Ні", False)
+        self._uplink.addItem("Так", True)
         self._notes = QTextEdit(self)
 
         self._pos_label = QLabel(f"{pos_x:.1f}, {pos_y:.1f}", self)
@@ -599,6 +609,8 @@ class DeviceFormDialog(QDialog):
         self._add_port_btn.clicked.connect(self._add_port_row)
         form.addLayout(self._ports_container)
         form.addWidget(self._add_port_btn)
+        form.addWidget(QLabel("Uplink"))
+        form.addWidget(self._uplink)
         form.addWidget(QLabel("Позиція (x, y)"))
         form.addWidget(self._pos_label)
         form.addWidget(QLabel("Нотатки"))
@@ -617,6 +629,8 @@ class DeviceFormDialog(QDialog):
         layout.addLayout(form)
         layout.addLayout(actions)
         self.setLayout(layout)
+        if device is not None:
+            self._fill_from_device(device)
 
     def _add_port_row(self) -> None:
         types = self._available_port_types()
@@ -651,6 +665,13 @@ class DeviceFormDialog(QDialog):
         return [(value, label) for value, label in options if value not in used]
 
     def accept(self) -> None:
+        ip_text = self._ip.text().strip()
+        if ip_text:
+            try:
+                ipaddress.ip_address(ip_text)
+            except ValueError:
+                QMessageBox.warning(self, "IP адреса", "Некоректний формат IP адреси.")
+                return
         types = [box.currentData() for box, _ in self._port_rows]
         if len(types) != len(set(types)):
             QMessageBox.warning(self, "Порти", "Кожен тип порту може бути лише один раз.")
@@ -687,7 +708,62 @@ class DeviceFormDialog(QDialog):
             ports=ports,
             position=(self._pos_x, self._pos_y),
             notes_text=notes,
+            is_uplink=bool(self._uplink.currentData()),
         )
+
+    def apply_to_device(self, device: Device) -> None:
+        device.name = self._name.text().strip() or device.name
+        device.device_type = self._type.currentData()
+        device.ip_address = self._ip.text().strip() or None
+        device.notes_text = self._notes.toPlainText().strip() or None
+        ports = {}
+        for box, value in self._port_rows:
+            text = value.text().strip()
+            if not text:
+                continue
+            ports[box.currentData()] = int(text)
+        device.ports = ports
+        device.position = (self._pos_x, self._pos_y)
+        device.is_uplink = bool(self._uplink.currentData())
+        device.metadata.pop("manual_status", None)
+
+    def _fill_from_device(self, device: Device) -> None:
+        self._name.setText(device.name)
+        idx = self._type.findData(device.device_type)
+        if idx >= 0:
+            self._type.setCurrentIndex(idx)
+        self._ip.setText(device.ip_address or "")
+        self._notes.setText(device.notes_text or "")
+        if device.position:
+            self._pos_x, self._pos_y = device.position
+            self._pos_label.setText(f"{self._pos_x:.1f}, {self._pos_y:.1f}")
+        self._uplink.setCurrentIndex(1 if device.is_uplink else 0)
+        for port_type, port_val in (device.ports or {}).items():
+            row = QHBoxLayout()
+            type_box = QComboBox(self)
+            for value, label in [("web", "Web"), ("ssh", "SSH"), ("snmp", "SNMP")]:
+                type_box.addItem(label, value)
+            idx = type_box.findData(port_type)
+            if idx >= 0:
+                type_box.setCurrentIndex(idx)
+            value_edit = QLineEdit(self)
+            value_edit.setValidator(QIntValidator(1, 65535, self))
+            value_edit.setText(str(port_val))
+            remove_btn = QPushButton("✕", self)
+            remove_btn.setFixedWidth(28)
+
+            def remove_row(row=row, type_box=type_box, value_edit=value_edit, remove_btn=remove_btn):
+                self._ports_container.removeItem(row)
+                for widget in (type_box, value_edit, remove_btn):
+                    widget.deleteLater()
+                self._port_rows[:] = [r for r in self._port_rows if r[0] is not type_box]
+
+            remove_btn.clicked.connect(remove_row)
+            row.addWidget(type_box)
+            row.addWidget(value_edit)
+            row.addWidget(remove_btn)
+            self._ports_container.addLayout(row)
+            self._port_rows.append((type_box, value_edit))
 
 
 class LinkFormDialog(QDialog):

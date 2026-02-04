@@ -23,7 +23,7 @@ class StatusState(str, Enum):
     UP = "up"
     DOWN = "down"
     DEGRADED = "degraded"
-    UNKNOWN = "unknown"
+    UNKNOWN = "degraded"
 
 
 class DeviceType(str, Enum):

@@ -1238,8 +1238,6 @@ class MainWindow(QMainWindow):
             device = site.devices.get(device_id)
             if device is None:
                 continue
-            if device.metadata.get("manual_status"):
-                return
             device.status.state = StatusState(state)
             device.status.last_seen = datetime.utcnow()
             device.status.rtt_ms = rtt_ms
@@ -1271,7 +1269,7 @@ class MainWindow(QMainWindow):
     def _site_status(site: Site) -> StatusState:
         devices = list(site.devices.values())
         if not devices:
-            return StatusState.UNKNOWN
+            return StatusState.DEGRADED
         uplinks = [d for d in devices if d.is_uplink]
         if any(d.status.state == StatusState.DOWN for d in uplinks):
             return StatusState.DOWN
@@ -1279,7 +1277,7 @@ class MainWindow(QMainWindow):
             return StatusState.DEGRADED
         if all(d.status.state == StatusState.UP for d in devices):
             return StatusState.UP
-        return StatusState.UNKNOWN
+        return StatusState.DEGRADED
 
     @staticmethod
     def _coverage_color(antenna_type: str | None) -> str:

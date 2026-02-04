@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 from datetime import datetime
+import base64
+import io
+import os
 from pathlib import Path
 from dataclasses import replace
-from concurrent.futures import ThreadPoolExecutor
-from math import asin, atan2, cos, log10, radians, sin, sqrt
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from math import asin, atan2, ceil, cos, degrees, floor, log10, radians, sin, sqrt
 from uuid import uuid4
+from threading import Lock
 
 from PySide6.QtCore import QPoint, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
@@ -43,10 +47,16 @@ from app.ui.project_tree import ProjectTree
 from app.ui.site_dialog import SiteDevicesDialog
 from app.ui.monitoring_panel import MonitoringPanel
 
+try:
+    from PIL import Image
+except Exception:  # pragma: no cover - optional dependency
+    Image = None
+
 
 class MainWindow(QMainWindow):
     prefetch_finished = Signal(int)
     coverage_result_ready = Signal(str, int, object)
+    coverage_tile_ready = Signal(str, int, object)
 
     def __init__(self, project: NetworkProject, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -95,7 +105,11 @@ class MainWindow(QMainWindow):
         self.inspector.link_updated.connect(self._on_inspector_link_updated)
         self.inspector.link_analyze_requested.connect(self._on_link_analyze_requested)
         self.inspector.site_updated.connect(self._on_site_updated)
+        self.inspector.environment_changed.connect(self._on_environment_changed)
         self.monitoring_panel = MonitoringPanel(self)
+        self._environment_type = self._project.metadata.get("environment", "mixed")
+        self.inspector.set_environment(self._environment_type)
+        self._project.metadata.setdefault("environment", self._environment_type)
         self._elevation = ElevationProvider()
         self._link_analyzer = LinkAnalyzer(self._elevation)
         self._coverage_calc = CoverageCalculator()
@@ -106,6 +120,7 @@ class MainWindow(QMainWindow):
         self._busy_count = 0
         self.prefetch_finished.connect(self._finish_prefetch)
         self.coverage_result_ready.connect(self._apply_coverage_result)
+        self.coverage_tile_ready.connect(self._apply_coverage_tile)
         self._prefetch_timer = QTimer(self)
         self._prefetch_timer.setSingleShot(True)
         self._prefetch_timer.timeout.connect(self._prefetch_elevation_for_view)
@@ -1051,6 +1066,7 @@ class MainWindow(QMainWindow):
         self._coverage_job_seq += 1
         job_id = self._coverage_job_seq
         self._coverage_job_for_key[coverage_id] = job_id
+        self.map_view.remove_coverage(coverage_id)
         self._set_busy("Розрахунок покриття…")
         future = self._bg_executor.submit(
             self._compute_coverage_data,
@@ -1058,6 +1074,8 @@ class MainWindow(QMainWindow):
             antenna_snapshot,
             azimuth,
             beamwidth,
+            coverage_id,
+            job_id,
         )
         future.add_done_callback(lambda f, key=coverage_id, jid=job_id: self._on_coverage_done(key, jid, f))
 
@@ -1077,6 +1095,7 @@ class MainWindow(QMainWindow):
         self.project_tree.set_project(self._project)
         self.map_view.clear_all()
         self.inspector.show_site(None)
+        self._set_environment(self._project.metadata.get("environment", "mixed"), refresh=False, mark_dirty=False)
         self._ping_checker.set_devices([])
         self._refresh_monitoring()
 
@@ -1090,6 +1109,7 @@ class MainWindow(QMainWindow):
         self._coverage_job_for_key.clear()
         self.project_tree.set_project(self._project)
         self.map_view.clear_all()
+        self._set_environment(self._project.metadata.get("environment", "mixed"), refresh=False, mark_dirty=False)
         for site in self._project.sites.values():
             self.map_view.add_marker(
                 site.id,
@@ -1211,6 +1231,33 @@ class MainWindow(QMainWindow):
         pos = self.project_tree.visualItemRect(item).center()
         self._on_tree_context_menu(pos)
 
+    def _set_environment(
+        self,
+        value: str,
+        *,
+        refresh: bool = True,
+        mark_dirty: bool = True,
+        update_ui: bool = True,
+    ) -> None:
+        if not value:
+            return
+        if value == self._environment_type and not refresh:
+            if update_ui:
+                self.inspector.set_environment(value)
+            return
+        self._environment_type = value
+        self._project.metadata["environment"] = value
+        if update_ui:
+            self.inspector.set_environment(value)
+        if mark_dirty:
+            self._dirty = True
+        if refresh:
+            for site in self._project.sites.values():
+                self._update_site_coverages(site)
+
+    def _on_environment_changed(self, value: str) -> None:
+        self._set_environment(value, update_ui=False)
+
     def _all_devices(self) -> list:
         devices = []
         for site in self._project.sites.values():
@@ -1274,6 +1321,29 @@ class MainWindow(QMainWindow):
         }.get(antenna_type or "", "#22c55e")
 
     @staticmethod
+    def _environment_loss_db(env_type: str, distance_km: float, freq_ghz: float) -> float:
+        presets = {
+            "open": (0.0, 0.1),
+            "mixed": (2.0, 0.4),
+            "urban": (6.0, 0.8),
+            "vegetation": (4.0, 0.9),
+        }
+        base_db, per_km = presets.get(env_type, presets["mixed"])
+        if freq_ghz < 0.3:
+            freq_factor = 0.5
+        elif freq_ghz < 1.0:
+            freq_factor = 0.7
+        elif freq_ghz < 6.0:
+            freq_factor = 1.0
+        elif freq_ghz < 11.0:
+            freq_factor = 1.2
+        elif freq_ghz < 18.0:
+            freq_factor = 1.4
+        else:
+            freq_factor = 1.6
+        return max(0.0, (base_db + per_km * distance_km) * freq_factor)
+
+    @staticmethod
     def _clamp_beamwidth(value: float) -> float:
         if value <= 0:
             return 1.0
@@ -1307,6 +1377,8 @@ class MainWindow(QMainWindow):
         antenna: AntennaParams,
         azimuth: float,
         beamwidth: float,
+        coverage_id: str | None = None,
+        job_id: int | None = None,
     ) -> dict | None:
         site_elevation = None
         if self._elevation.available:
@@ -1323,7 +1395,38 @@ class MainWindow(QMainWindow):
             f"{site.name} | {antenna_name} | Азимут: {azimuth}° | Сектор: {beamwidth}° | "
             f"Gain: {antenna.gain_dbi or '-'} dBi"
         )
-        bands = self._coverage_gradient_bands(site, antenna, azimuth, beamwidth, range_km, site_elevation)
+        horizon_limit_km = self._radio_horizon_limit_km(antenna, site_elevation_m=site_elevation)
+        if horizon_limit_km is not None:
+            range_km = min(range_km, horizon_limit_km)
+        tile_callback = None
+        if coverage_id and job_id:
+            tile_callback = lambda tile: self.coverage_tile_ready.emit(coverage_id, job_id, tile)
+        raster_ok = self._coverage_raster_tiles(
+            site,
+            antenna,
+            azimuth,
+            beamwidth,
+            range_km,
+            horizon_limit_km=horizon_limit_km,
+            site_elevation=site_elevation,
+            step_km=0.5,
+            tile_size=64,
+            on_tile=tile_callback,
+        )
+        if raster_ok:
+            return {
+                "mode": "raster_done",
+                "tooltip": tooltip,
+            }
+        bands = self._coverage_gradient_bands(
+            site,
+            antenna,
+            azimuth,
+            beamwidth,
+            range_km,
+            site_elevation,
+            horizon_limit_km=horizon_limit_km,
+        )
         if bands:
             return {
                 "mode": "bands",
@@ -1376,7 +1479,10 @@ class MainWindow(QMainWindow):
             self._set_busy(None)
             return
         mode = result.get("mode")
-        if mode == "bands":
+        if mode == "raster_done":
+            self._set_busy(None)
+            return
+        elif mode == "bands":
             self.map_view.update_coverage_bands(coverage_id, result["bands"], result["tooltip"])
         elif mode == "points":
             self.map_view.update_coverage_points(coverage_id, result["points"], result["color"], result["tooltip"])
@@ -1393,6 +1499,13 @@ class MainWindow(QMainWindow):
             )
         self._set_busy(None)
 
+    def _apply_coverage_tile(self, coverage_id: str, job_id: int, tile: dict) -> None:
+        if self._coverage_job_for_key.get(coverage_id) != job_id:
+            return
+        if not tile:
+            return
+        self.map_view.update_coverage_raster_tile(coverage_id, tile["data_url"], tile["bounds"])
+
     def _coverage_points_with_dem(
         self,
         site: Site,
@@ -1401,7 +1514,6 @@ class MainWindow(QMainWindow):
         beamwidth: float,
         range_km: float,
         site_elevation: float | None = None,
-        obstruction_limit_m: float = 25.0,
     ) -> list | None:
         distances = self._coverage_los_distances(
             site,
@@ -1410,13 +1522,291 @@ class MainWindow(QMainWindow):
             beamwidth,
             range_km,
             site_elevation,
-            obstruction_limit_m,
-            6.0,
-            use_fresnel=False,
+            allowed_diffraction_db=6.0,
+            use_fresnel=True,
         )
         if not distances:
             return None
         return self._coverage_points_from_distances(site, distances, range_km)
+
+    def _coverage_raster_tiles(
+        self,
+        site: Site,
+        antenna: AntennaParams,
+        azimuth: float,
+        beamwidth: float,
+        range_km: float,
+        horizon_limit_km: float | None = None,
+        site_elevation: float | None = None,
+        step_km: float = 0.5,
+        tile_size: int = 64,
+        on_tile=None,
+    ) -> bool:
+        if Image is None:
+            return False
+        if not self._elevation.available:
+            return False
+        freq_ghz = antenna.frequency_ghz
+        tx_power = antenna.tx_power_dbm
+        rx_sens = antenna.rx_sensitivity_dbm
+        if freq_ghz is None or freq_ghz <= 0 or tx_power is None or rx_sens is None:
+            return False
+        rx_gain = antenna.rx_gain_dbi or 0.0
+        tx_gain = antenna.gain_dbi or 0.0
+        losses = antenna.misc_losses_db or 0.0
+        margin = antenna.link_margin_db or 0.0
+        actual_eirp = tx_power + tx_gain - losses
+        required_base = rx_sens + margin + losses - rx_gain
+
+        effective_range_km = range_km
+        if horizon_limit_km is not None:
+            effective_range_km = min(effective_range_km, horizon_limit_km)
+        if effective_range_km <= 0:
+            return False
+
+        lat = site.location.lat
+        lon = site.location.lon
+        cos_lat = cos(radians(lat))
+        if abs(cos_lat) < 1e-6:
+            return None
+        lat_per_km = 1.0 / 110.574
+        lon_per_km = 1.0 / (111.320 * cos_lat)
+        max_extent_km = effective_range_km
+
+        size = int((max_extent_km * 2.0) / step_km) + 1
+        if size <= 1:
+            return False
+        center = size // 2
+
+        site_elev = site_elevation
+        if site_elev is None:
+            site_elev = self._elevation.get_elevation(lat, lon)
+        if site_elev is None:
+            return False
+        base_height = site_elev + (antenna.height_m or 0.0)
+        rx_height_m = antenna.rx_height_m if antenna.rx_height_m is not None else 2.0
+        if rx_height_m < 0:
+            rx_height_m = 0.0
+
+        half_bw = beamwidth / 2.0
+        use_bw = beamwidth < 360.0 - 1e-3
+        earth_radius_m = 6371000.0 * 1.1
+        wavelength_m = 0.3 / freq_ghz
+        fresnel_factor = 0.6
+        env_type = self._environment_type
+        base_fspl = 92.45 + (20.0 * log10(freq_ghz))
+        max_workers = min(4, os.cpu_count() or 4)
+        cache_lock = Lock()
+        elev_cache: dict[tuple[float, float], float | None] = {}
+        cache_limit = 60000
+
+        x_km_list = [(i - center) * step_km for i in range(size)]
+        y_km_list = [(center - j) * step_km for j in range(size)]
+        lat_list = [lat + (y_km * lat_per_km) for y_km in y_km_list]
+        lon_list = [lon + (x_km * lon_per_km) for x_km in x_km_list]
+
+        def delta_eirp_for(distance_km: float, diff_loss_db: float, env_loss_db: float) -> float:
+            fspl = base_fspl + (20.0 * log10(distance_km))
+            return actual_eirp - required_base - fspl - diff_loss_db - env_loss_db
+
+        def tile_bounds(x0: int, y0: int, w: int, h: int) -> list[float]:
+            x1 = x0 + w - 1
+            y1 = y0 + h - 1
+            left_km = (x0 - center - 0.5) * step_km
+            right_km = (x1 - center + 0.5) * step_km
+            top_km = (center - y0 + 0.5) * step_km
+            bottom_km = (center - y1 - 0.5) * step_km
+            north = lat + (top_km * lat_per_km)
+            south = lat + (bottom_km * lat_per_km)
+            west = lon + (left_km * lon_per_km)
+            east = lon + (right_km * lon_per_km)
+            return [min(south, north), min(west, east), max(south, north), max(west, east)]
+
+        def sector_bounds_xy() -> tuple[int, int, int, int]:
+            if not use_bw:
+                return 0, size - 1, 0, size - 1
+            def in_sector(angle: float) -> bool:
+                delta = (angle - azimuth + 540.0) % 360.0 - 180.0
+                return abs(delta) <= half_bw
+            angles = [azimuth - half_bw, azimuth + half_bw]
+            for cand in (0.0, 90.0, 180.0, 270.0):
+                if in_sector(cand):
+                    angles.append(cand)
+            xs = [0.0]
+            ys = [0.0]
+            for ang in angles:
+                rad = radians(ang)
+                xs.append(sin(rad) * max_extent_km)
+                ys.append(cos(rad) * max_extent_km)
+            min_x = min(xs)
+            max_x = max(xs)
+            min_y = min(ys)
+            max_y = max(ys)
+            i_min = max(0, int(floor(min_x / step_km + center)))
+            i_max = min(size - 1, int(ceil(max_x / step_km + center)))
+            j_min = max(0, int(floor(center - max_y / step_km)))
+            j_max = min(size - 1, int(ceil(center - min_y / step_km)))
+            return i_min, i_max, j_min, j_max
+
+        def adaptive_step(distance_km: float) -> float:
+            if distance_km <= 3.0:
+                step = 0.2
+            elif distance_km <= 8.0:
+                step = 0.3
+            elif distance_km <= 15.0:
+                step = 0.4
+            elif distance_km <= 30.0:
+                step = 0.6
+            else:
+                step = 0.8
+            if step >= distance_km:
+                step = max(0.1, distance_km / 2.0)
+            return step
+
+        def elevation_cached(lat_q: float, lon_q: float) -> float | None:
+            key = (round(lat_q, 4), round(lon_q, 4))
+            if key in elev_cache:
+                return elev_cache[key]
+            elev_val = self._elevation.get_elevation(lat_q, lon_q)
+            with cache_lock:
+                if len(elev_cache) >= cache_limit:
+                    elev_cache.clear()
+                elev_cache[key] = elev_val
+            return elev_val
+
+        any_tiles = False
+        i_min, i_max, j_min, j_max = sector_bounds_xy()
+
+        def compute_tile(tile_x: int, tile_y: int, tile_w: int, tile_h: int) -> dict | None:
+            image = Image.new("RGBA", (tile_w, tile_h), (0, 0, 0, 0))
+            pixels = image.load()
+            tile_has = False
+            local_cache: dict[tuple[float, float], float | None] = {}
+
+            def elev_local(lat_q: float, lon_q: float) -> float | None:
+                key = (round(lat_q, 4), round(lon_q, 4))
+                if key in local_cache:
+                    return local_cache[key]
+                if key in elev_cache:
+                    val = elev_cache[key]
+                    local_cache[key] = val
+                    return val
+                val = elevation_cached(lat_q, lon_q)
+                local_cache[key] = val
+                return val
+
+            for j in range(tile_h):
+                global_j = tile_y + j
+                if global_j < j_min or global_j > j_max:
+                    continue
+                y_km = y_km_list[global_j]
+                lat_row = lat_list[global_j]
+                for i in range(tile_w):
+                    global_i = tile_x + i
+                    if global_i < i_min or global_i > i_max:
+                        continue
+                    x_km = x_km_list[global_i]
+                    dist_km = sqrt(x_km * x_km + y_km * y_km)
+                    if dist_km <= 0 or dist_km > effective_range_km:
+                        continue
+                    bearing = (degrees(atan2(x_km, y_km)) + 360.0) % 360.0
+                    if use_bw:
+                        delta = (bearing - azimuth + 540.0) % 360.0 - 180.0
+                        if abs(delta) > half_bw:
+                            continue
+                    lon_col = lon_list[global_i]
+                    target_elev = elev_local(lat_row, lon_col)
+                    if target_elev is None:
+                        continue
+                    env_loss = self._environment_loss_db(env_type, dist_km, freq_ghz)
+                    delta_no_diff = delta_eirp_for(dist_km, 0.0, env_loss)
+                    if delta_no_diff < -5.0:
+                        continue
+                    target_height = target_elev + rx_height_m
+                    diff_loss = 0.0
+                    blocked = False
+                    step_path_km = adaptive_step(dist_km)
+                    for d_km in self._frange(step_path_km, dist_km, step_path_km):
+                        if d_km >= dist_km:
+                            break
+                        frac = d_km / dist_km
+                        x_s = x_km * frac
+                        y_s = y_km * frac
+                        lat_s = lat + (y_s * lat_per_km)
+                        lon_s = lon + (x_s * lon_per_km)
+                        elev_s = elev_local(lat_s, lon_s)
+                        if elev_s is None:
+                            blocked = True
+                            break
+                        los_height = base_height + (target_height - base_height) * frac
+                        clearance = 0.0
+                        d2_km = dist_km - d_km
+                        if dist_km > 0:
+                            r1 = 17.32 * ((d_km * d2_km) / (freq_ghz * dist_km)) ** 0.5
+                            clearance = fresnel_factor * r1
+                        d1_m = d_km * 1000.0
+                        d2_m = d2_km * 1000.0
+                        bulge_m = (d1_m * d2_m) / (2.0 * earth_radius_m)
+                        base_los = los_height - clearance
+                        elev_eff = elev_s + bulge_m
+                        excess = elev_eff - base_los
+                        if excess > 20.0:
+                            blocked = True
+                            break
+                        if excess > 0:
+                            v = excess * (2.0 * (d1_m + d2_m) / (wavelength_m * d1_m * d2_m)) ** 0.5
+                            loss_db = 6.9 + 20.0 * log10(((v - 0.1) ** 2 + 1) ** 0.5 + v - 0.1)
+                            if loss_db > diff_loss:
+                                diff_loss = loss_db
+                    if blocked:
+                        continue
+                    delta_eirp = delta_eirp_for(dist_km, diff_loss, env_loss)
+                    if delta_eirp >= 5.0:
+                        pixels[i, j] = (34, 197, 94, 140)
+                        tile_has = True
+                    elif delta_eirp >= 0.0:
+                        pixels[i, j] = (245, 158, 11, 140)
+                        tile_has = True
+                    elif delta_eirp >= -5.0:
+                        pixels[i, j] = (239, 68, 68, 140)
+                        tile_has = True
+            if not tile_has:
+                return None
+            buffer = io.BytesIO()
+            image.save(buffer, format="PNG")
+            data_url = "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
+            return {
+                "data_url": data_url,
+                "bounds": tile_bounds(tile_x, tile_y, tile_w, tile_h),
+            }
+
+        tiles = []
+        for tile_y in range(0, size, tile_size):
+            tile_h = min(tile_size, size - tile_y)
+            if tile_y + tile_h - 1 < j_min or tile_y > j_max:
+                continue
+            for tile_x in range(0, size, tile_size):
+                tile_w = min(tile_size, size - tile_x)
+                if tile_x + tile_w - 1 < i_min or tile_x > i_max:
+                    continue
+                tiles.append((tile_x, tile_y, tile_w, tile_h))
+
+        if not tiles:
+            return False
+
+        with ThreadPoolExecutor(max_workers=min(max_workers, len(tiles))) as tile_pool:
+            futures = [
+                tile_pool.submit(compute_tile, tile_x, tile_y, tile_w, tile_h)
+                for tile_x, tile_y, tile_w, tile_h in tiles
+            ]
+            for future in as_completed(futures):
+                result = future.result()
+                if result is None:
+                    continue
+                any_tiles = True
+                if on_tile:
+                    on_tile(result)
+        return any_tiles
 
     def _coverage_gradient_bands(
         self,
@@ -1426,6 +1816,7 @@ class MainWindow(QMainWindow):
         beamwidth: float,
         range_km: float,
         site_elevation: float | None = None,
+        horizon_limit_km: float | None = None,
     ) -> list | None:
         freq_ghz = antenna.frequency_ghz
         if freq_ghz is None or freq_ghz <= 0:
@@ -1457,6 +1848,8 @@ class MainWindow(QMainWindow):
         max_range = red_range
         if self._coverage_calc.max_range_km is not None:
             max_range = min(max_range, self._coverage_calc.max_range_km)
+        if horizon_limit_km is not None:
+            max_range = min(max_range, horizon_limit_km)
         max_range = max(max_range, self._coverage_calc.min_range_km)
         green_range = max(min(green_range, max_range), self._coverage_calc.min_range_km)
         yellow_range = max(min(yellow_range, max_range), self._coverage_calc.min_range_km)
@@ -1469,8 +1862,7 @@ class MainWindow(QMainWindow):
             beamwidth,
             max_range,
             site_elevation,
-            40.0,
-            12.0,
+            allowed_diffraction_db=12.0,
             use_fresnel=False,
         )
         if not distances_red:
@@ -1482,8 +1874,7 @@ class MainWindow(QMainWindow):
             beamwidth,
             max_range,
             site_elevation,
-            25.0,
-            6.0,
+            allowed_diffraction_db=6.0,
             use_fresnel=False,
         )
         if not distances_yellow:
@@ -1495,8 +1886,7 @@ class MainWindow(QMainWindow):
             beamwidth,
             max_range,
             site_elevation,
-            0.0,
-            0.0,
+            allowed_diffraction_db=0.0,
             use_fresnel=True,
         )
         if not distances_green:
@@ -1514,6 +1904,22 @@ class MainWindow(QMainWindow):
             bands.append({"color": "#22c55e", "latlngs": green_points})
         return bands if bands else None
 
+    @staticmethod
+    def _radio_horizon_limit_km(
+        antenna: AntennaParams,
+        site_elevation_m: float | None = None,
+        default_rx_height_m: float = 2.0,
+    ) -> float | None:
+        ground_m = max(site_elevation_m or 0.0, 0.0)
+        tx_height = antenna.height_m or 0.0
+        if tx_height < 0:
+            tx_height = 0.0
+        rx_height = antenna.rx_height_m if antenna.rx_height_m is not None else default_rx_height_m
+        if rx_height < 0:
+            rx_height = 0.0
+        horizon_km = 3.57 * (sqrt(tx_height + ground_m) + sqrt(rx_height))
+        return horizon_km + 10.0
+
     def _coverage_los_distances(
         self,
         site: Site,
@@ -1522,9 +1928,9 @@ class MainWindow(QMainWindow):
         beamwidth: float,
         range_km: float,
         site_elevation: float | None = None,
-        obstruction_limit_m: float = 0.0,
         allowed_diffraction_db: float = 0.0,
         use_fresnel: bool = True,
+        obstruction_grace_m: float = 20.0,
     ) -> list[tuple[int, float]] | None:
         if not self._elevation.available:
             return None
@@ -1581,19 +1987,17 @@ class MainWindow(QMainWindow):
                     d1_m = d1 * 1000.0
                     d2_m = d2 * 1000.0
                     bulge_m = (d1_m * d2_m) / (2.0 * earth_radius_m)
-                    threshold = (
-                        los_height - clearance + obstruction_limit_m
-                        if use_fresnel
-                        else los_height + obstruction_limit_m
-                    )
+                    base_los = los_height - clearance if use_fresnel else los_height
                     elev_eff = elev_j + bulge_m
-                    if elev_eff > threshold:
+                    excess = elev_eff - base_los
+                    if excess > 0:
+                        if excess > obstruction_grace_m:
+                            los_ok = False
+                            break
                         if not freq_valid or not wavelength_m:
                             los_ok = False
                             break
-                        h_m = elev_eff - (los_height - clearance)
-                        if h_m <= 0:
-                            continue
+                        h_m = excess
                         v = h_m * (2.0 * (d1_m + d2_m) / (wavelength_m * d1_m * d2_m)) ** 0.5
                         loss_db = 6.9 + 20.0 * log10(((v - 0.1) ** 2 + 1) ** 0.5 + v - 0.1)
                         if loss_db > allowed_diffraction_db:

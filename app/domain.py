@@ -190,6 +190,7 @@ class NetworkProject:
     sites: Dict[str, Site] = field(default_factory=dict)
     links: Dict[str, Link] = field(default_factory=dict)
     notes: List[ConfigNote] = field(default_factory=list)
+    metadata: Dict[str, str] = field(default_factory=dict)
 
     def add_site(self, site: Site) -> None:
         self.sites[site.id] = site

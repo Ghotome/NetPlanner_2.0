@@ -534,7 +534,16 @@
       }
 
       function updateCoverage(id, lat, lon, azimuth, beamwidth, rangeKm, color, tooltip) {
-        const existing = coverages.get(id);
+        let existing = coverages.get(id);
+        if (existing) {
+          if (Array.isArray(existing)) {
+            existing.forEach((poly) => coverageLayer.removeLayer(poly));
+          } else {
+            coverageLayer.removeLayer(existing);
+          }
+          coverages.delete(id);
+          existing = null;
+        }
         if (!existing || existing.length !== 1) {
           addCoverage(id, lat, lon, azimuth, beamwidth, rangeKm, color);
           return;
@@ -548,7 +557,16 @@
       }
 
       function updateCoveragePoints(id, latlngs, color, tooltip) {
-        const existing = coverages.get(id);
+        let existing = coverages.get(id);
+        if (existing) {
+          if (Array.isArray(existing)) {
+            existing.forEach((poly) => coverageLayer.removeLayer(poly));
+          } else {
+            coverageLayer.removeLayer(existing);
+          }
+          coverages.delete(id);
+          existing = null;
+        }
         if (!existing || existing.length !== 1) {
           const newPoly = L.polygon(latlngs, { color: color, fillColor: color, fillOpacity: 0.15 });
           if (tooltip) { newPoly.bindTooltip(tooltip); }
@@ -565,7 +583,11 @@
       function updateCoverageBands(id, bands, tooltip) {
         const existing = coverages.get(id);
         if (existing) {
-          existing.forEach((poly) => coverageLayer.removeLayer(poly));
+          if (Array.isArray(existing)) {
+            existing.forEach((poly) => coverageLayer.removeLayer(poly));
+          } else {
+            coverageLayer.removeLayer(existing);
+          }
         }
         const polys = [];
         bands.forEach((band) => {
@@ -582,10 +604,32 @@
         coverages.set(id, polys);
       }
 
+      function updateCoverageRasterTile(id, dataUrl, bounds) {
+        let existing = coverages.get(id);
+        if (existing && !Array.isArray(existing)) {
+          coverageLayer.removeLayer(existing);
+          existing = null;
+        }
+        if (!existing) {
+          existing = [];
+          coverages.set(id, existing);
+        }
+        const latLngBounds = Array.isArray(bounds[0])
+          ? bounds
+          : [[bounds[0], bounds[1]], [bounds[2], bounds[3]]];
+        const overlay = L.imageOverlay(dataUrl, latLngBounds, { opacity: 1, pane: 'coveragePane' });
+        overlay.addTo(coverageLayer);
+        existing.push(overlay);
+      }
+
       function removeCoverage(id) {
-        const polygons = coverages.get(id);
-        if (!polygons) { return; }
-        polygons.forEach((polygon) => coverageLayer.removeLayer(polygon));
+        const entry = coverages.get(id);
+        if (!entry) { return; }
+        if (Array.isArray(entry)) {
+          entry.forEach((polygon) => coverageLayer.removeLayer(polygon));
+        } else {
+          coverageLayer.removeLayer(entry);
+        }
         coverages.delete(id);
       }
 
@@ -851,6 +895,7 @@
       window.updateCoverage = updateCoverage;
       window.updateCoveragePoints = updateCoveragePoints;
       window.updateCoverageBands = updateCoverageBands;
+      window.updateCoverageRasterTile = updateCoverageRasterTile;
       window.removeCoverage = removeCoverage;
       window.setCoverageVisible = setCoverageVisible;
       window.clearAll = function () {

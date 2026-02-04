@@ -144,7 +144,10 @@ class AntennaBlock(QWidget):
         label_losses.setToolTip("Втрати на АФТ: кабель, конектори, грозозахист, роз'єми.")
         label_margin.setToolTip(
             "Запас лінку (fade margin) на завади/погоду/деградацію.\n"
-            "Зазвичай 5–15 дБ."
+            "Зазвичай 5–15 дБ.\n"
+            "Типові значення:\n"
+            "Погода: 5–10 дБ (помірно), 10–20 дБ (складно).\n"
+            "Місцевість: відкрита 0–5 дБ, змішана 5–15 дБ, ліс 10–25 дБ, міська 15–30 дБ."
         )
         label_mcs.setToolTip(
             "Обери MCS зі специфікації. Чутливість RX залежить від MCS.\n"
@@ -427,10 +430,24 @@ class InspectorPanel(QWidget):
     link_updated = Signal(str, dict)
     link_analyze_requested = Signal(str)
     site_updated = Signal(str, dict)
+    environment_changed = Signal(str)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self._current_link_id: str | None = None
+        self._project_group = QWidget(self)
+        project_layout = QFormLayout(self._project_group)
+        self._environment = QComboBox(self)
+        self._environment.addItem("Відкритий простір", "open")
+        self._environment.addItem("Змішане середовище", "mixed")
+        self._environment.addItem("Міська забудова", "urban")
+        self._environment.addItem("Висока рослинність", "vegetation")
+        self._environment.setToolTip(
+            "Глобальний вплив середовища на затухання.\n"
+            "Застосовується в розрахунку покриття."
+        )
+        self._environment.currentIndexChanged.connect(self._emit_environment_changed)
+        project_layout.addRow(QLabel("Середовище:"), self._environment)
 
         self._site_group = QWidget(self)
         site_layout = QFormLayout(self._site_group)
@@ -544,6 +561,7 @@ class InspectorPanel(QWidget):
         content = QWidget(self)
         content_layout = QVBoxLayout(content)
         content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.addWidget(self._project_group)
         content_layout.addWidget(self._site_group)
         content_layout.addWidget(self._link_group)
         content_layout.addStretch(1)
@@ -556,6 +574,18 @@ class InspectorPanel(QWidget):
         layout.addWidget(scroll)
         self._link_group.setVisible(False)
         self._current_site_id: str | None = None
+
+    def set_environment(self, value: str) -> None:
+        idx = self._environment.findData(value)
+        if idx < 0:
+            idx = 0
+        with QSignalBlocker(self._environment):
+            self._environment.setCurrentIndex(idx)
+
+    def _emit_environment_changed(self) -> None:
+        value = self._environment.currentData()
+        if value:
+            self.environment_changed.emit(value)
 
     def show_site(self, site: Site | None) -> None:
         if site is None:

@@ -49,12 +49,14 @@ def project_to_dict(project: NetworkProject) -> dict[str, Any]:
         "notes": [note_to_dict(n) for n in project.notes],
         "sites": {sid: site_to_dict(site) for sid, site in project.sites.items()},
         "links": {lid: link_to_dict(link) for lid, link in project.links.items()},
+        "metadata": project.metadata,
     }
 
 
 def project_from_dict(data: dict[str, Any]) -> NetworkProject:
     project = NetworkProject(id=data.get("id", "proj"), name=data.get("name", "Project"))
     project.notes = [note_from_dict(n) for n in data.get("notes", [])]
+    project.metadata = data.get("metadata", {})
     for sid, sdata in data.get("sites", {}).items():
         project.sites[sid] = site_from_dict(sdata)
     for lid, ldata in data.get("links", {}).items():

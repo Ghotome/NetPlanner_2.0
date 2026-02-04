@@ -249,6 +249,11 @@ class MapView(QWebEngineView):
             f"updateCoveragePoints({site_id!r}, {points!r}, {color!r}, {tooltip!r});"
         )
 
+    def update_coverage_raster_tile(self, site_id: str, data_url: str, bounds: list) -> None:
+        self.page().runJavaScript(
+            f"updateCoverageRasterTile({site_id!r}, {data_url!r}, {bounds!r});"
+        )
+
     def update_coverage_bands(self, site_id: str, bands: list, tooltip: str) -> None:
         bands_json = json.dumps(bands, ensure_ascii=False)
         tooltip_json = json.dumps(tooltip, ensure_ascii=False)

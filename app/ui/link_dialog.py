@@ -33,10 +33,10 @@ class SiteLinkDialog(QDialog):
         self._kind.currentIndexChanged.connect(self._toggle_fields)
 
         self._frequency = QLineEdit(self)
-        freq_validator = QDoubleValidator(0.0001, 30.0, 6, self)
+        freq_validator = QDoubleValidator(0.1, 30000.0, 3, self)
         freq_validator.setLocale(QLocale.c())
         self._frequency.setValidator(freq_validator)
-        self._frequency_hint = QLabel("Діапазон: 0.0001–30 ГГц.", self)
+        self._frequency_hint = QLabel("Діапазон: 0.1–30000 МГц.", self)
         self._frequency_hint.setStyleSheet("color: #9aa0a6; font-size: 11px;")
         self._frequency.textChanged.connect(self._validate_fields)
         self._ssid = QLineEdit(self)
@@ -62,7 +62,7 @@ class SiteLinkDialog(QDialog):
         for label, ctype in cable_options:
             self._cable_type.addItem(label, ctype)
 
-        self._label_frequency = QLabel("Частота (ГГц)")
+        self._label_frequency = QLabel("Частота (МГц)")
         self._label_ssid = QLabel("SSID")
         self._label_password = QLabel("Пароль")
         self._label_eth_type = QLabel("Тип лінка (Ethernet)")
@@ -117,7 +117,7 @@ class SiteLinkDialog(QDialog):
         if not value:
             return None
         try:
-            return float(value)
+            return float(value) / 1000.0
         except ValueError:
             return None
 

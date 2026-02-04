@@ -74,6 +74,7 @@ class AntennaBlock(QWidget):
         self._rx_gain = QLineEdit(self)
         self._rx_height = QLineEdit(self)
         self._rx_sens = QLineEdit(self)
+        self._channel_width = QLineEdit(self)
         self._losses = QLineEdit(self)
         self._margin = QLineEdit(self)
         self._mcs = QComboBox(self)
@@ -114,6 +115,9 @@ class AntennaBlock(QWidget):
         sens_validator = QDoubleValidator(-150.0, -30.0, 2, self)
         sens_validator.setLocale(QLocale.c())
         self._rx_sens.setValidator(sens_validator)
+        ch_validator = QDoubleValidator(0.001, 2000.0, 3, self)
+        ch_validator.setLocale(QLocale.c())
+        self._channel_width.setValidator(ch_validator)
         loss_validator = QDoubleValidator(0.0, 60.0, 2, self)
         loss_validator.setLocale(QLocale.c())
         self._losses.setValidator(loss_validator)
@@ -129,6 +133,7 @@ class AntennaBlock(QWidget):
             self._mcs.addItem(f"MCS {idx}", f"mcs{idx}")
 
         label_rx_sens = QLabel("Чутливість RX (dBm):")
+        label_channel_width = QLabel("Ширина каналу (МГц):")
         label_rx_gain = QLabel("Підсилення RX (dBi):")
         label_rx_height = QLabel("Висота RX (м):")
         label_losses = QLabel("Втрати АФТ (дБ):")
@@ -139,6 +144,14 @@ class AntennaBlock(QWidget):
         label_calc_ok = QLabel("EIRP OK:")
 
         label_rx_sens.setToolTip("Параметр береться зі специфікації пристрою (RX sensitivity).")
+        label_channel_width.setToolTip(
+            "Ширина каналу для корекції чутливості RX.\n"
+            "Корекція робиться відносно 20 МГц.\n"
+            "Приклад: 20/40/60 МГц для Wi‑Fi, 0.0125 МГц для DMR.\n"
+            "ELRS: 0.5/1.0/2.0 МГц для 2.4 ГГц."
+            "Analog VTX: 6.25/12.5 МГц для 5.8 ГГц.\n"
+            "Детальніше дивиться у специфікації пристрою."
+        )
         label_rx_gain.setToolTip("Підсилення приймальної антени зі специфікації.")
         label_rx_height.setToolTip("Висота приймальної антени над землею.")
         label_losses.setToolTip("Втрати на АФТ: кабель, конектори, грозозахист, роз'єми.")
@@ -153,12 +166,11 @@ class AntennaBlock(QWidget):
             "Обери MCS зі специфікації. Чутливість RX залежить від MCS.\n"
             "Після вибору внеси RX sensitivity зі специфікації."
         )
-        label_calc_distance.setToolTip("Введи відому дистанцію для оцінки втрат у вільному просторі.")
+        label_calc_distance.setToolTip("Введи відому дистанцію до приймача для оцінки FSPL та EIRP.")
         label_calc_fspl.setToolTip(
-            "FSPL = 92.45 + 20·log10(d_km) + 20·log10(f_GHz)\n"
-            "f_GHz = f_MHz / 1000"
+            "Затухання сигналу у вільному просторі (Free Space Path Loss) на введеній дистанції."
         )
-        label_calc_ok.setToolTip("Наведи курсор, щоб побачити фактичне/потрібне EIRP.")
+        label_calc_ok.setToolTip("EIRP OK, якщо потужність передавача достатня для покриття дистанції.")
 
         form.addRow(QLabel("Тип антени:"), self._antenna_type)
         form.addRow(QLabel("Азимут:"), self._azimuth)
@@ -180,6 +192,8 @@ class AntennaBlock(QWidget):
         add_hint("Діапазон: 0–8000 м.")
         form.addRow(label_rx_sens, self._rx_sens)
         add_hint("Діапазон: -150…-30 dBm.")
+        form.addRow(label_channel_width, self._channel_width)
+        add_hint("Діапазон: 0.001–2000 МГц.")
         form.addRow(label_losses, self._losses)
         add_hint("Діапазон: 0–60 dB.")
         form.addRow(label_margin, self._margin)
@@ -216,6 +230,7 @@ class AntennaBlock(QWidget):
             self._rx_gain,
             self._rx_height,
             self._rx_sens,
+            self._channel_width,
             self._losses,
             self._margin,
             self._calc_distance,
@@ -254,6 +269,8 @@ class AntennaBlock(QWidget):
             self._rx_sens.setText(
                 "" if antenna.rx_sensitivity_dbm is None else f"{antenna.rx_sensitivity_dbm:.2f}"
             )
+            if antenna.channel_width_mhz is not None:
+                self._channel_width.setText(f"{antenna.channel_width_mhz:.3f}")
             self._losses.setText("" if antenna.misc_losses_db is None else str(antenna.misc_losses_db))
             self._margin.setText("" if antenna.link_margin_db is None else str(antenna.link_margin_db))
             self._update_eirp_calculator()
@@ -300,6 +317,7 @@ class AntennaBlock(QWidget):
             "rx_gain_dbi": float(self._rx_gain.text()) if self._rx_gain.text().strip() else None,
             "rx_height_m": float(self._rx_height.text()) if self._rx_height.text().strip() else None,
             "rx_sensitivity_dbm": float(self._rx_sens.text()) if self._rx_sens.text().strip() else None,
+            "channel_width_mhz": float(self._channel_width.text()) if self._channel_width.text().strip() else None,
             "misc_losses_db": float(self._losses.text()) if self._losses.text().strip() else None,
             "link_margin_db": float(self._margin.text()) if self._margin.text().strip() else None,
             "applied": self._applied,
@@ -442,10 +460,7 @@ class InspectorPanel(QWidget):
         self._environment.addItem("Змішане середовище", "mixed")
         self._environment.addItem("Міська забудова", "urban")
         self._environment.addItem("Висока рослинність", "vegetation")
-        self._environment.setToolTip(
-            "Глобальний вплив середовища на затухання.\n"
-            "Застосовується в розрахунку покриття."
-        )
+        self._environment.setToolTip("Глобальний вплив середовища на затухання сигналу.")
         self._environment.currentIndexChanged.connect(self._emit_environment_changed)
         project_layout.addRow(QLabel("Середовище:"), self._environment)
 

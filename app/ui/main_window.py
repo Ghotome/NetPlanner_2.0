@@ -309,11 +309,7 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
         file_menu.addAction("Вихід", self.close, "Ctrl+Q")
 
-        edit_menu = menu.addMenu("Правка")
-        edit_menu.addAction("Перейменувати", self._rename_selected, "F2")
-
         help_menu = menu.addMenu("Довідка")
-        help_menu.addAction("Гайд користувача", self._show_user_guide)
         help_menu.addAction("Про програму", self._about)
 
     def _apply_styles(self) -> None:
@@ -1321,6 +1317,19 @@ class MainWindow(QMainWindow):
         }.get(antenna_type or "", "#22c55e")
 
     @staticmethod
+    def _apply_channel_width(antenna: AntennaParams) -> AntennaParams:
+        if antenna.rx_sensitivity_dbm is None:
+            return antenna
+        bw_mhz = antenna.channel_width_mhz
+        if bw_mhz is None or bw_mhz <= 0:
+            return antenna
+        ref_mhz = 20.0
+        if bw_mhz <= 0:
+            return antenna
+        rx_sens = antenna.rx_sensitivity_dbm + (10.0 * log10(bw_mhz / ref_mhz))
+        return replace(antenna, rx_sensitivity_dbm=rx_sens)
+
+    @staticmethod
     def _environment_loss_db(env_type: str, distance_km: float, freq_ghz: float) -> float:
         presets = {
             "open": (0.0, 0.1),
@@ -1383,8 +1392,9 @@ class MainWindow(QMainWindow):
         site_elevation = None
         if self._elevation.available:
             site_elevation = self._elevation.get_elevation(site.location.lat, site.location.lon)
+        antenna_eff = self._apply_channel_width(antenna)
         coverage = self._coverage_calc.estimate_range_km(
-            antenna,
+            antenna_eff,
             site_elevation_m=site_elevation,
             beamwidth_deg=beamwidth,
         )
@@ -1403,7 +1413,7 @@ class MainWindow(QMainWindow):
             tile_callback = lambda tile: self.coverage_tile_ready.emit(coverage_id, job_id, tile)
         raster_ok = self._coverage_raster_tiles(
             site,
-            antenna,
+            antenna_eff,
             azimuth,
             beamwidth,
             range_km,
@@ -1420,7 +1430,7 @@ class MainWindow(QMainWindow):
             }
         bands = self._coverage_gradient_bands(
             site,
-            antenna,
+            antenna_eff,
             azimuth,
             beamwidth,
             range_km,
@@ -1433,7 +1443,7 @@ class MainWindow(QMainWindow):
                 "bands": bands,
                 "tooltip": tooltip,
             }
-        points = self._coverage_points_with_dem(site, antenna, azimuth, beamwidth, range_km, site_elevation)
+        points = self._coverage_points_with_dem(site, antenna_eff, azimuth, beamwidth, range_km, site_elevation)
         if points:
             return {
                 "mode": "points",

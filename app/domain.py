@@ -102,6 +102,7 @@ class AntennaParams:
     rx_gain_dbi: Optional[float] = None
     rx_height_m: Optional[float] = None
     rx_sensitivity_dbm: Optional[float] = None
+    channel_width_mhz: Optional[float] = None
     misc_losses_db: Optional[float] = None
     link_margin_db: Optional[float] = None
     mcs: Optional[str] = None

@@ -105,11 +105,7 @@ class MainWindow(QMainWindow):
         self.inspector.link_updated.connect(self._on_inspector_link_updated)
         self.inspector.link_analyze_requested.connect(self._on_link_analyze_requested)
         self.inspector.site_updated.connect(self._on_site_updated)
-        self.inspector.environment_changed.connect(self._on_environment_changed)
         self.monitoring_panel = MonitoringPanel(self)
-        self._environment_type = self._project.metadata.get("environment", "mixed")
-        self.inspector.set_environment(self._environment_type)
-        self._project.metadata.setdefault("environment", self._environment_type)
         self._elevation = ElevationProvider()
         self._link_analyzer = LinkAnalyzer(self._elevation)
         self._coverage_calc = CoverageCalculator()
@@ -858,6 +854,7 @@ class MainWindow(QMainWindow):
         if site is None:
             return
         location_changed = False
+        env_changed = False
         if "name" in data and data["name"]:
             site.name = data["name"]
         if "kind" in data and data["kind"] is not None:
@@ -867,6 +864,11 @@ class MainWindow(QMainWindow):
         if lat is not None and lon is not None:
             site.location = GeoPoint(lat=lat, lon=lon, altitude_m=site.location.altitude_m)
             location_changed = True
+        env_value = data.get("environment")
+        if env_value:
+            if site.metadata.get("environment") != env_value:
+                site.metadata["environment"] = env_value
+                env_changed = True
 
         def update_antenna(target: AntennaParams, payload: dict) -> None:
             target.name = payload.get("name") or target.name
@@ -922,7 +924,7 @@ class MainWindow(QMainWindow):
         self.map_view.update_marker_label(site.id, site.name, self._site_kind_label(kind_value))
         self.map_view.move_marker(site.id, site.location.lat, site.location.lon)
         self.inspector.show_site(site)
-        if location_changed:
+        if location_changed or env_changed:
             self._update_site_coverages(site)
         for link in self._project.links.values():
             if link.site_a_id == site.id or link.site_b_id == site.id:
@@ -1091,7 +1093,6 @@ class MainWindow(QMainWindow):
         self.project_tree.set_project(self._project)
         self.map_view.clear_all()
         self.inspector.show_site(None)
-        self._set_environment(self._project.metadata.get("environment", "mixed"), refresh=False, mark_dirty=False)
         self._ping_checker.set_devices([])
         self._refresh_monitoring()
 
@@ -1105,7 +1106,6 @@ class MainWindow(QMainWindow):
         self._coverage_job_for_key.clear()
         self.project_tree.set_project(self._project)
         self.map_view.clear_all()
-        self._set_environment(self._project.metadata.get("environment", "mixed"), refresh=False, mark_dirty=False)
         for site in self._project.sites.values():
             self.map_view.add_marker(
                 site.id,
@@ -1226,33 +1226,6 @@ class MainWindow(QMainWindow):
             return
         pos = self.project_tree.visualItemRect(item).center()
         self._on_tree_context_menu(pos)
-
-    def _set_environment(
-        self,
-        value: str,
-        *,
-        refresh: bool = True,
-        mark_dirty: bool = True,
-        update_ui: bool = True,
-    ) -> None:
-        if not value:
-            return
-        if value == self._environment_type and not refresh:
-            if update_ui:
-                self.inspector.set_environment(value)
-            return
-        self._environment_type = value
-        self._project.metadata["environment"] = value
-        if update_ui:
-            self.inspector.set_environment(value)
-        if mark_dirty:
-            self._dirty = True
-        if refresh:
-            for site in self._project.sites.values():
-                self._update_site_coverages(site)
-
-    def _on_environment_changed(self, value: str) -> None:
-        self._set_environment(value, update_ui=False)
 
     def _all_devices(self) -> list:
         devices = []
@@ -1411,6 +1384,7 @@ class MainWindow(QMainWindow):
         tile_callback = None
         if coverage_id and job_id:
             tile_callback = lambda tile: self.coverage_tile_ready.emit(coverage_id, job_id, tile)
+        env_type = site.metadata.get("environment") or self._project.metadata.get("environment") or "mixed"
         raster_ok = self._coverage_raster_tiles(
             site,
             antenna_eff,
@@ -1421,6 +1395,7 @@ class MainWindow(QMainWindow):
             site_elevation=site_elevation,
             step_km=0.5,
             tile_size=64,
+            env_type=env_type,
             on_tile=tile_callback,
         )
         if raster_ok:
@@ -1550,6 +1525,7 @@ class MainWindow(QMainWindow):
         site_elevation: float | None = None,
         step_km: float = 0.5,
         tile_size: int = 64,
+        env_type: str = "mixed",
         on_tile=None,
     ) -> bool:
         if Image is None:
@@ -1603,7 +1579,6 @@ class MainWindow(QMainWindow):
         earth_radius_m = 6371000.0 * 1.1
         wavelength_m = 0.3 / freq_ghz
         fresnel_factor = 0.6
-        env_type = self._environment_type
         base_fspl = 92.45 + (20.0 * log10(freq_ghz))
         max_workers = min(4, os.cpu_count() or 4)
         cache_lock = Lock()

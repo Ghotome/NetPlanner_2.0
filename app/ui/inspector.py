@@ -441,28 +441,14 @@ class AntennaBlock(QWidget):
             field.setText(new_text)
         field.setCursorPosition(cursor_pos)
 
-
-
-
 class InspectorPanel(QWidget):
     link_updated = Signal(str, dict)
     link_analyze_requested = Signal(str)
     site_updated = Signal(str, dict)
-    environment_changed = Signal(str)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self._current_link_id: str | None = None
-        self._project_group = QWidget(self)
-        project_layout = QFormLayout(self._project_group)
-        self._environment = QComboBox(self)
-        self._environment.addItem("Відкритий простір", "open")
-        self._environment.addItem("Змішане середовище", "mixed")
-        self._environment.addItem("Міська забудова", "urban")
-        self._environment.addItem("Висока рослинність", "vegetation")
-        self._environment.setToolTip("Глобальний вплив середовища на затухання сигналу.")
-        self._environment.currentIndexChanged.connect(self._emit_environment_changed)
-        project_layout.addRow(QLabel("Середовище:"), self._environment)
 
         self._site_group = QWidget(self)
         site_layout = QFormLayout(self._site_group)
@@ -476,6 +462,14 @@ class InspectorPanel(QWidget):
         self._site_lon = QLineEdit(self)
         self._site_elevation = QLabel("—")
         self._site_notes = QLabel("—")
+        self._site_environment = QComboBox(self)
+        self._site_environment.addItem("Відкритий простір", "open")
+        self._site_environment.addItem("Змішане середовище", "mixed")
+        self._site_environment.addItem("Міська забудова", "urban")
+        self._site_environment.addItem("Висока рослинність", "vegetation")
+        self._site_environment.setToolTip(
+            "Вплив середовища на затухання сигналу для антен цього сайту."
+        )
         lat_validator = QDoubleValidator(-90.0, 90.0, 6, self)
         lat_validator.setLocale(QLocale.c())
         self._site_lat.setValidator(lat_validator)
@@ -506,6 +500,7 @@ class InspectorPanel(QWidget):
         label_lon = QLabel("Довгота:")
         label_elevation = QLabel("Висота:")
         label_notes = QLabel("Нотатки:")
+        label_environment = QLabel("Середовище:")
 
         site_layout.addRow(label_name, self._site_name)
         site_layout.addRow(label_type, self._site_type)
@@ -513,6 +508,7 @@ class InspectorPanel(QWidget):
         site_layout.addRow(label_lon, self._site_lon)
         site_layout.addRow(label_elevation, self._site_elevation)
         site_layout.addRow(label_notes, self._site_notes)
+        site_layout.addRow(label_environment, self._site_environment)
         site_layout.addRow(self._site_apply_basic)
         site_layout.addRow(QLabel("Антени:"))
         site_layout.addRow(self._antenna_container_widget)
@@ -576,7 +572,6 @@ class InspectorPanel(QWidget):
         content = QWidget(self)
         content_layout = QVBoxLayout(content)
         content_layout.setContentsMargins(0, 0, 0, 0)
-        content_layout.addWidget(self._project_group)
         content_layout.addWidget(self._site_group)
         content_layout.addWidget(self._link_group)
         content_layout.addStretch(1)
@@ -590,17 +585,6 @@ class InspectorPanel(QWidget):
         self._link_group.setVisible(False)
         self._current_site_id: str | None = None
 
-    def set_environment(self, value: str) -> None:
-        idx = self._environment.findData(value)
-        if idx < 0:
-            idx = 0
-        with QSignalBlocker(self._environment):
-            self._environment.setCurrentIndex(idx)
-
-    def _emit_environment_changed(self) -> None:
-        value = self._environment.currentData()
-        if value:
-            self.environment_changed.emit(value)
 
     def show_site(self, site: Site | None) -> None:
         if site is None:
@@ -610,6 +594,7 @@ class InspectorPanel(QWidget):
             self._site_lon.setText("")
             self._site_elevation.setText("—")
             self._site_notes.setText("—")
+            self._set_site_environment(None)
             self._clear_antenna_blocks()
             self._add_antenna_btn.setEnabled(False)
             self._apply_all_antennas_btn.setEnabled(False)
@@ -627,6 +612,7 @@ class InspectorPanel(QWidget):
         self._site_lon.setText(f"{site.location.lon:.6f}")
         self._site_elevation.setText("—")
         self._site_notes.setText(f"пристроїв: {len(site.devices)}")
+        self._set_site_environment(site.metadata.get("environment") if site.metadata else None)
         self._clear_antenna_blocks()
         for idx, antenna in enumerate(site.antennas, start=1):
             self._add_antenna_block(antenna, idx)
@@ -636,6 +622,15 @@ class InspectorPanel(QWidget):
         self._link_group.setVisible(False)
         self._current_link_id = None
         self._current_site_id = site.id
+
+    def _set_site_environment(self, value: str | None) -> None:
+        idx = self._site_environment.findData(value or "")
+        if idx < 0:
+            idx = self._site_environment.findData("mixed")
+            if idx < 0:
+                idx = 0
+        with QSignalBlocker(self._site_environment):
+            self._site_environment.setCurrentIndex(idx)
 
     def show_link(self, link: Link | None, site_a_name: str = "—", site_b_name: str = "—") -> None:
         if link is None:
@@ -850,6 +845,7 @@ class InspectorPanel(QWidget):
             "kind": self._site_type.currentData(),
             "lat": float(self._site_lat.text()) if self._site_lat.text().strip() else None,
             "lon": float(self._site_lon.text()) if self._site_lon.text().strip() else None,
+            "environment": self._site_environment.currentData(),
         }
         self.site_updated.emit(self._current_site_id, payload)
 

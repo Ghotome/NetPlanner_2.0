@@ -117,6 +117,43 @@
         top: 55%;
         transform: translateY(-50%);
       }
+      .tool-submenu {
+        position: absolute;
+        display: none;
+        flex-direction: column;
+        gap: 6px;
+        min-width: 180px;
+        padding: 10px;
+        background: var(--panel-bg);
+        border: 1px solid var(--panel-border);
+        border-radius: 10px;
+        box-shadow: var(--panel-shadow);
+        z-index: 2000;
+      }
+      .tool-submenu-title {
+        font-size: 12px;
+        font-weight: 700;
+        color: #e2e8f0;
+        margin-bottom: 4px;
+      }
+      .tool-submenu-item {
+        text-align: left;
+        padding: 7px 10px;
+        border-radius: 8px;
+        border: 1px solid rgba(255,255,255,0.32);
+        background: rgba(255,255,255,0.16);
+        color: #f8fafc;
+        cursor: pointer;
+        font-size: 12px;
+        box-shadow: inset 0 0 0 1px rgba(0,0,0,0.12);
+      }
+      .tool-submenu-item:hover {
+        background: rgba(255,255,255,0.24);
+      }
+      @media (prefers-color-scheme: light) {
+        .tool-submenu-title { color: #0f1720; }
+        .tool-submenu-item { color: #0f1720; border-color: rgba(15,23,32,0.2); }
+      }
     </style>
   </head>
   <body>
@@ -172,7 +209,7 @@
         <button id="tool-azimuth" class="tool-btn" title="Азимут"><img src="../ui/icons/azimuth.png" alt="Azimuth"></button>
         <button id="tool-ruler" class="tool-btn" title="Лінійка"><img src="../ui/icons/ruler.png" alt="Ruler"></button>
         <button id="tool-los" class="tool-btn" title="LOS"><img src="../ui/icons/los.png" alt="LOS"></button>
-        <button id="tool-eirp" class="tool-btn" title="Калькулятор EIRP"><img src="../ui/icons/eirp.png" alt="EIRP"></button>
+        <button id="tool-calculators" class="tool-btn" title="Калькулятори"><img src="../ui/icons/eirp.png" alt="Calculators"></button>
       `;
       L.DomEvent.disableClickPropagation(instrumentsContainer);
 
@@ -201,12 +238,92 @@
       let azimuthTooltip = null;
       let azimuthMeasureId = 1;
       const azimuthMeasures = new Map();
+      let horizonLayer = null;
       let elevationEnabled = false;
       let coverageEnabled = true;
       let dragLine = null;
       let dragTooltip = null;
       let dragSourceId = null;
       let hoverTargetId = null;
+      let calculatorsMenu = null;
+
+      function ensureCalculatorsMenu() {
+        if (calculatorsMenu) { return; }
+        calculatorsMenu = document.createElement('div');
+        calculatorsMenu.className = 'tool-submenu';
+        calculatorsMenu.innerHTML = `
+          <div class="tool-submenu-title">Калькулятори</div>
+          <button class="tool-submenu-item" id="calc-eirp">Калькулятор EIRP</button>
+          <button class="tool-submenu-item" id="calc-horizon">Калькулятор горизонту</button>
+          <button class="tool-submenu-item" id="calc-power">Вт ↔ dBm</button>
+        `;
+        map.getContainer().appendChild(calculatorsMenu);
+        const eirpBtn = calculatorsMenu.querySelector('#calc-eirp');
+        if (eirpBtn) {
+          eirpBtn.onclick = (evt) => {
+            evt.stopPropagation();
+            hideCalculatorsMenu();
+            if (bridge && bridge.openEirpCalculator) {
+              bridge.openEirpCalculator();
+            }
+          };
+        }
+        const horizonBtn = calculatorsMenu.querySelector('#calc-horizon');
+        if (horizonBtn) {
+          horizonBtn.onclick = (evt) => {
+            evt.stopPropagation();
+            hideCalculatorsMenu();
+            if (bridge && bridge.openHorizonCalculator) {
+              bridge.openHorizonCalculator();
+            }
+          };
+        }
+        const powerBtn = calculatorsMenu.querySelector('#calc-power');
+        if (powerBtn) {
+          powerBtn.onclick = (evt) => {
+            evt.stopPropagation();
+            hideCalculatorsMenu();
+            if (bridge && bridge.openPowerCalculator) {
+              bridge.openPowerCalculator();
+            }
+          };
+        }
+        calculatorsMenu.addEventListener('click', (evt) => evt.stopPropagation());
+      }
+
+      function showCalculatorsMenu(anchor) {
+        ensureCalculatorsMenu();
+        const rect = anchor.getBoundingClientRect();
+        const containerRect = map.getContainer().getBoundingClientRect();
+        const left = rect.right - containerRect.left + 8;
+        calculatorsMenu.style.left = `${left}px`;
+        calculatorsMenu.style.display = 'flex';
+        calculatorsMenu.style.visibility = 'hidden';
+        const menuHeight = calculatorsMenu.offsetHeight || 0;
+        const menuWidth = calculatorsMenu.offsetWidth || 0;
+        let top = rect.top - containerRect.top - (menuHeight - rect.height) / 2;
+        const maxTop = containerRect.height - menuHeight - 8;
+        const maxLeft = containerRect.width - menuWidth - 8;
+        top = Math.max(8, Math.min(top, maxTop));
+        const clampedLeft = Math.max(8, Math.min(left, maxLeft));
+        calculatorsMenu.style.left = `${clampedLeft}px`;
+        calculatorsMenu.style.top = `${top}px`;
+        calculatorsMenu.style.visibility = 'visible';
+      }
+
+      function hideCalculatorsMenu() {
+        if (!calculatorsMenu) { return; }
+        calculatorsMenu.style.display = 'none';
+      }
+
+      function toggleCalculatorsMenu(anchor) {
+        ensureCalculatorsMenu();
+        if (calculatorsMenu.style.display === 'flex') {
+          hideCalculatorsMenu();
+        } else {
+          showCalculatorsMenu(anchor);
+        }
+      }
 
       function ensureBridgeReady(cb) {
         if (bridge) { cb(); return; }
@@ -218,6 +335,28 @@
         }
       }
 
+      function ensureHorizonLayer() {
+        if (horizonLayer) { return; }
+        horizonLayer = L.layerGroup().addTo(map);
+      }
+
+      function addHorizonPoint(lat, lon) {
+        ensureHorizonLayer();
+        const marker = L.circleMarker([lat, lon], {
+          radius: 5,
+          color: '#2563eb',
+          weight: 2,
+          fillColor: '#60a5fa',
+          fillOpacity: 0.9,
+        });
+        marker.addTo(horizonLayer);
+      }
+
+      function clearHorizonPoints() {
+        if (!horizonLayer) { return; }
+        horizonLayer.clearLayers();
+      }
+
       function bindToolButtons() {
         const el = document.getElementById('tool-elevation');
         const cov = document.getElementById('tool-coverage');
@@ -225,7 +364,7 @@
         const a = document.getElementById('tool-azimuth');
         const r = document.getElementById('tool-ruler');
         const l = document.getElementById('tool-los');
-        const e = document.getElementById('tool-eirp');
+        const c = document.getElementById('tool-calculators');
         if (el) {
           el.onclick = () => {
             setElevationVisible(!elevationEnabled);
@@ -277,6 +416,7 @@
             setHeightMode(false);
             setAzimuthMode(false);
             setRulerMode(false);
+            hideCalculatorsMenu();
             if (bridge && bridge.setLosMode) {
               bridge.setLosMode(!losMode);
             } else {
@@ -284,16 +424,19 @@
             }
           };
         }
-        if (e) {
-          e.onclick = () => {
-            if (bridge && bridge.openEirpCalculator) {
-              bridge.openEirpCalculator();
-            }
+        if (c) {
+          c.onclick = (evt) => {
+            evt.stopPropagation();
+            toggleCalculatorsMenu(c);
           };
         }
         updateToolStates();
         updateInstrumentStates();
       }
+
+      map.on('click', () => {
+        hideCalculatorsMenu();
+      });
 
       function siteIconUrl(kind, status) {
         const kindKey = (kind || 'core').toString().toLowerCase();
@@ -674,7 +817,6 @@
           }
           return;
         }
-        if (!losMode) { return; }
         if (bridge) { bridge.mapClick(e.latlng.lat, e.latlng.lng); }
       });
 
@@ -702,6 +844,8 @@
       window.setLosMode = setLosMode;
       window.setAzimuthMode = setAzimuthMode;
       window.setRulerMode = setRulerMode;
+      window.addHorizonPoint = addHorizonPoint;
+      window.clearHorizonPoints = clearHorizonPoints;
       window.setElevationVisible = setElevationVisible;
       window.addCoverage = addCoverage;
       window.updateCoverage = updateCoverage;

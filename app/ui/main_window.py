@@ -36,6 +36,8 @@ from app.ui.inspector import InspectorPanel
 from app.ui.link_profile_dialog import LinkProfileDialog
 from app.ui.link_dialog import SiteLinkDialog
 from app.ui.eirp_calculator import EirpCalculatorDialog
+from app.ui.horizon_calculator import HorizonCalculatorDialog
+from app.ui.watt_dbm_calculator import WattDbmCalculatorDialog
 from app.ui.map_view import MapView
 from app.ui.project_tree import ProjectTree
 from app.ui.site_dialog import SiteDevicesDialog
@@ -84,6 +86,8 @@ class MainWindow(QMainWindow):
             on_set_ruler_mode=self._set_ruler_mode_from_map,
             on_set_los_mode=self._set_los_mode_from_map,
             on_open_eirp=self._open_eirp_calculator,
+            on_open_horizon=self._open_horizon_calculator,
+            on_open_power=self._open_power_calculator,
             parent=self,
         )
 
@@ -142,6 +146,8 @@ class MainWindow(QMainWindow):
         self._pending_height: tuple[float, float, int, int] | None = None
         self._los_mode = False
         self._los_points: list[tuple[float, float]] = []
+        self._horizon_mode = False
+        self._horizon_points: list[tuple[float, float]] = []
         self._project_path: str | None = None
         self._dirty = False
         self._autosave_timer = QTimer(self)
@@ -528,7 +534,37 @@ class MainWindow(QMainWindow):
             self.map_view.set_los_mode(False)
             self.statusBar().clearMessage()
 
+    def _open_horizon_calculator(self) -> None:
+        QMessageBox.information(
+            self,
+            "Горизонт",
+            "Оберіть 2 точки на мапі: передавач і приймач.\n"
+            "Після вибору буде доступне введення висоти антен для розрахунку горизонту.\n"
+            "Рослинність і забудова не враховані, реальний горизонт буде меншим.",
+        )
+        self._horizon_mode = True
+        self._horizon_points = []
+        self.map_view.clear_horizon_points()
+        self.statusBar().showMessage("Горизонт: оберіть 2 точки на мапі")
+
+    def _open_power_calculator(self) -> None:
+        dialog = WattDbmCalculatorDialog(self)
+        dialog.exec()
+
     def _on_map_click(self, lat: float, lon: float) -> None:
+        if self._horizon_mode:
+            self._horizon_points.append((lat, lon))
+            self.map_view.add_horizon_point(lat, lon)
+            if len(self._horizon_points) < 2:
+                self.statusBar().showMessage("Горизонт: оберіть другу точку")
+                return
+            a, b = self._horizon_points
+            self._horizon_mode = False
+            self._horizon_points = []
+            self.statusBar().clearMessage()
+            self._open_horizon_dialog(a, b)
+            return
+
         if not self._los_mode:
             return
         self._los_points.append((lat, lon))
@@ -543,6 +579,24 @@ class MainWindow(QMainWindow):
         if self._los_action.isChecked():
             self._los_action.setChecked(False)
         self._run_los_between_points(a, b)
+
+    def _open_horizon_dialog(self, a: tuple[float, float], b: tuple[float, float]) -> None:
+        if not self._elevation.available:
+            QMessageBox.warning(self, "Горизонт", "Немає даних висот (Pillow?)")
+            self.map_view.clear_horizon_points()
+            return
+        lat1, lon1 = a
+        lat2, lon2 = b
+        elev_a = self._elevation.get_elevation(lat1, lon1)
+        elev_b = self._elevation.get_elevation(lat2, lon2)
+        if elev_a is None or elev_b is None:
+            QMessageBox.warning(self, "Горизонт", "Немає даних висот для обраних точок")
+            self.map_view.clear_horizon_points()
+            return
+        distance_km = self._distance_km(lat1, lon1, lat2, lon2)
+        dialog = HorizonCalculatorDialog(elev_a, elev_b, distance_km, self)
+        dialog.exec()
+        self.map_view.clear_horizon_points()
 
     def _run_los_between_points(self, a: tuple[float, float], b: tuple[float, float]) -> None:
         if not self._elevation.available:
@@ -1394,9 +1448,9 @@ class MainWindow(QMainWindow):
             term = (fspl_max - 92.45 - (20.0 * log10(freq_ghz))) / 20.0
             return 10 ** term
 
-        green_range = range_for_delta(15.0)
-        yellow_range = range_for_delta(5.0)
-        red_range = range_for_delta(-10.0)
+        green_range = range_for_delta(5.0)
+        yellow_range = range_for_delta(0.0)
+        red_range = range_for_delta(-5.0)
         if green_range is None or yellow_range is None or red_range is None:
             return None
 

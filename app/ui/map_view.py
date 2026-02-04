@@ -30,6 +30,8 @@ class MapBridge(QObject):
         on_set_ruler_mode: Callable[[bool], None],
         on_set_los_mode: Callable[[bool], None],
         on_open_eirp: Callable[[], None],
+        on_open_horizon: Callable[[], None],
+        on_open_power: Callable[[], None],
     ) -> None:
         super().__init__()
         self._on_show_context_menu = on_show_context_menu
@@ -49,6 +51,8 @@ class MapBridge(QObject):
         self._on_set_ruler_mode = on_set_ruler_mode
         self._on_set_los_mode = on_set_los_mode
         self._on_open_eirp = on_open_eirp
+        self._on_open_horizon = on_open_horizon
+        self._on_open_power = on_open_power
 
     @Slot(float, float, int, int)
     def showContextMenu(self, lat: float, lon: float, x: int, y: int) -> None:
@@ -108,6 +112,14 @@ class MapBridge(QObject):
     def openEirpCalculator(self) -> None:
         self._on_open_eirp()
 
+    @Slot()
+    def openHorizonCalculator(self) -> None:
+        self._on_open_horizon()
+
+    @Slot()
+    def openPowerCalculator(self) -> None:
+        self._on_open_power()
+
     @Slot(float, float, float, float, int)
     def prefetchElevation(
         self, south: float, west: float, north: float, east: float, zoom: int
@@ -143,6 +155,8 @@ class MapView(QWebEngineView):
         on_set_ruler_mode: Callable[[bool], None],
         on_set_los_mode: Callable[[bool], None],
         on_open_eirp: Callable[[], None],
+        on_open_horizon: Callable[[], None],
+        on_open_power: Callable[[], None],
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -164,6 +178,8 @@ class MapView(QWebEngineView):
             on_set_ruler_mode,
             on_set_los_mode,
             on_open_eirp,
+            on_open_horizon,
+            on_open_power,
         )
         self._channel = QWebChannel(self)
         self._channel.registerObject("bridge", self._bridge)
@@ -289,6 +305,12 @@ class MapView(QWebEngineView):
 
     def set_ruler_mode(self, enabled: bool) -> None:
         self.page().runJavaScript(f"setRulerMode({str(enabled).lower()});")
+
+    def add_horizon_point(self, lat: float, lon: float) -> None:
+        self.page().runJavaScript(f"addHorizonPoint({lat}, {lon});")
+
+    def clear_horizon_points(self) -> None:
+        self.page().runJavaScript("clearHorizonPoints();")
 
     def update_link_meta(
         self, link_id: str, label: str, kind: str, info: str, distance_km: float | None

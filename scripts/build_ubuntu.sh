@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
 python -m pip install pyinstaller
 
 pyinstaller -y pyinstaller.spec

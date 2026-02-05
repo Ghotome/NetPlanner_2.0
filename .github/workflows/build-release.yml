@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version for artifacts (e.g. 2.3.1). Leave empty to use tag/PR/commit."
+        description: "Version for artifacts"
         required: false
         default: ""
   push:
@@ -15,7 +15,7 @@ on:
 
 jobs:
   prepare:
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.merged == true }}
+    if: ${{ github.event_name != 'pull_request' || (github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'publish') }}
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
@@ -92,7 +92,7 @@ jobs:
 
   ubuntu:
     needs: prepare
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-20.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

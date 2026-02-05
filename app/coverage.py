@@ -66,9 +66,9 @@ class CoverageCalculator:
     @staticmethod
     def _antenna_type_factor(antenna_type: Optional[str]) -> float:
         return {
-            "omni": 0.9,
-            "sector": 1.0,
-            "directional": 1.1,
+            "Омніполярна": 0.9,
+            "Секторна": 1.0,
+            "Спрямована": 1.1,
         }.get(antenna_type or "", 1.0)
 
     @staticmethod

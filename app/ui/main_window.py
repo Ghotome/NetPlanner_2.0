@@ -50,9 +50,10 @@ from app.ui.site_dialog import SiteDevicesDialog
 from app.ui.monitoring_panel import MonitoringPanel
 
 try:
-    from PIL import Image
+    from PIL import Image, ImageFilter
 except Exception:  # pragma: no cover - optional dependency
     Image = None
+    ImageFilter = None
 
 
 class MainWindow(QMainWindow):
@@ -923,7 +924,8 @@ class MainWindow(QMainWindow):
             target.rx_gain_dbi = payload.get("rx_gain_dbi")
             target.rx_height_m = payload.get("rx_height_m")
             target.rx_sensitivity_dbm = payload.get("rx_sensitivity_dbm")
-            target.channel_width_mhz = payload.get("channel_width_mhz")
+            if "channel_width_mhz" in payload:
+                target.channel_width_mhz = payload.get("channel_width_mhz")
             target.misc_losses_db = payload.get("misc_losses_db")
             target.link_margin_db = payload.get("link_margin_db")
             if "applied" in payload:
@@ -1833,6 +1835,8 @@ class MainWindow(QMainWindow):
                         tile_has = True
             if not tile_has:
                 return None
+            if ImageFilter is not None:
+                image = image.filter(ImageFilter.GaussianBlur(radius=0.6))
             buffer = io.BytesIO()
             image.save(buffer, format="PNG")
             data_url = "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")

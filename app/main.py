@@ -1,17 +1,17 @@
-import sys
 import os
-
+import sys
 from pathlib import Path
-
-from PySide6.QtCore import QCoreApplication, Qt
-from PySide6.QtGui import QIcon
-from PySide6.QtWidgets import QApplication
-
-from app.domain import NetworkProject
-from app.ui.main_window import MainWindow
 
 
 def main() -> int:
+    if os.environ.get("NETPLANNER_FORCE_XCB") == "1":
+        os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
+    from PySide6.QtCore import QCoreApplication, Qt
+    from PySide6.QtGui import QIcon
+    from PySide6.QtWidgets import QApplication
+
+    from app.domain import NetworkProject
+    from app.ui.main_window import MainWindow
     # flags = os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "")
     #extra = "--disable-gpu-rasterization"
     #if extra not in flags:

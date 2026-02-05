@@ -189,6 +189,7 @@
         div.innerHTML = `
           <button id="tool-elevation" class="tool-btn" title="Шар висот"><img src="../ui/icons/elevation.png" alt="Elevation"></button>
           <button id="tool-coverage" class="tool-btn" title="Покриття"><img src="../ui/icons/coverage.png" alt="Coverage"></button>
+          <button id="tool-link-labels" class="tool-btn" title="Лейбли лінків"><img src="../ui/icons/labels.png" alt="Link labels"></button>
         `;
         L.DomEvent.disableClickPropagation(div);
         return div;
@@ -236,6 +237,7 @@
       let elevationEnabled = false;
       let coverageEnabled = true;
       let coverageSuppressed = false;
+      let linkLabelsVisible = true;
       let dragLine = null;
       let dragTooltip = null;
       let dragSourceId = null;
@@ -366,6 +368,7 @@
       function bindToolButtons() {
         const el = document.getElementById('tool-elevation');
         const cov = document.getElementById('tool-coverage');
+        const linkLbl = document.getElementById('tool-link-labels');
         const h = document.getElementById('tool-height');
         const a = document.getElementById('tool-azimuth');
         const r = document.getElementById('tool-ruler');
@@ -379,6 +382,11 @@
         if (cov) {
           cov.onclick = () => {
             setCoverageVisible(!coverageEnabled);
+          };
+        }
+        if (linkLbl) {
+          linkLbl.onclick = () => {
+            setLinkLabelsVisible(!linkLabelsVisible);
           };
         }
         if (h) {
@@ -652,8 +660,10 @@
       function updateToolStates() {
         const el = document.getElementById('tool-elevation');
         const cov = document.getElementById('tool-coverage');
+        const linkLbl = document.getElementById('tool-link-labels');
         if (el) { el.classList.toggle('active', elevationEnabled); }
         if (cov) { cov.classList.toggle('active', coverageEnabled); }
+        if (linkLbl) { linkLbl.classList.toggle('active', linkLabelsVisible); }
       }
 
       function updateInstrumentStates() {
@@ -704,6 +714,9 @@
         line.addTo(map);
         const labelText = label;
         line.bindTooltip(labelText, { permanent: true, direction: 'center' });
+        if (!linkLabelsVisible) {
+          line.unbindTooltip();
+        }
         line.on('click', (e) => {
           if (bridge) { bridge.selectLink(id); }
           if (bridge) { bridge.showLinkMenu(id, e.originalEvent.clientX, e.originalEvent.clientY); }
@@ -752,6 +765,22 @@
         entry.info = info;
         entry.label = label;
         entry.distanceKm = distanceKm;
+      }
+
+      function setLinkLabelsVisible(enabled) {
+        linkLabelsVisible = !!enabled;
+        links.forEach((entry) => {
+          if (linkLabelsVisible) {
+            if (!entry.line.getTooltip()) {
+              entry.line.bindTooltip(entry.label, { permanent: true, direction: 'center' });
+            }
+          } else {
+            if (entry.line.getTooltip()) {
+              entry.line.unbindTooltip();
+            }
+          }
+        });
+        updateToolStates();
       }
 
       function removeLink(id) {

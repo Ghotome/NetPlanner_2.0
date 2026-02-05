@@ -7,7 +7,14 @@ on:
 
 jobs:
   build:
-    runs-on: macos-latest
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            os: macos-13
+          - arch: arm64
+            os: macos-14
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -33,8 +40,8 @@ jobs:
             app/main.py
       - name: Package artifact
         run: |
-          ditto -c -k --sequesterRsrc --keepParent dist/NetPlanner NetPlanner-macos.zip
+          ditto -c -k --sequesterRsrc --keepParent dist/NetPlanner NetPlanner-macos-${{ matrix.arch }}.zip
       - uses: actions/upload-artifact@v4
         with:
-          name: NetPlanner-macos
-          path: NetPlanner-macos.zip
+          name: NetPlanner-macos-${{ matrix.arch }}
+          path: NetPlanner-macos-${{ matrix.arch }}.zip

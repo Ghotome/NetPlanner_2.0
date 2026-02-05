@@ -18,10 +18,21 @@ jobs:
           python -m pip install -U pip
           python -m pip install -r requirements.txt
           python -m pip install pyinstaller
+      - name: Prepare Windows icon
+        run: |
+          python - <<'PY'
+          from PIL import Image
+          src = "app/ui/icons/app_icons/app_icon_96_96.png"
+          dst = "app/ui/icons/app_icons/app_icon.ico"
+          img = Image.open(src).convert("RGBA")
+          img.save(dst, sizes=[(16,16),(24,24),(32,32),(48,48),(64,64),(96,96)])
+          print("Saved", dst)
+          PY
       - name: Build (portable onedir)
         shell: cmd
         run: >
           pyinstaller --noconfirm --windowed --name NetPlanner
+          --icon "app\\ui\\icons\\app_icons\\app_icon.ico"
           --add-data "app\\web;app\\web"
           --add-data "app\\ui\\icons;app\\ui\\icons"
           --add-data "app\\icon.svg;app\\icon.svg"

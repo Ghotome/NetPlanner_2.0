@@ -115,7 +115,7 @@ class AntennaBlock(QWidget):
         sens_validator = QDoubleValidator(-150.0, -30.0, 2, self)
         sens_validator.setLocale(QLocale.c())
         self._rx_sens.setValidator(sens_validator)
-        ch_validator = QDoubleValidator(0.001, 2000.0, 3, self)
+        ch_validator = QDoubleValidator(0.0001, 2000.0, 4, self)
         ch_validator.setLocale(QLocale.c())
         self._channel_width.setValidator(ch_validator)
         loss_validator = QDoubleValidator(0.0, 60.0, 2, self)
@@ -160,7 +160,6 @@ class AntennaBlock(QWidget):
             "Зазвичай 5–15 дБ.\n"
             "Типові значення:\n"
             "Погода: 5–10 дБ (помірно), 10–20 дБ (складно).\n"
-            "Місцевість: відкрита 0–5 дБ, змішана 5–15 дБ, ліс 10–25 дБ, міська 15–30 дБ."
         )
         label_mcs.setToolTip(
             "Обери MCS зі специфікації. Чутливість RX залежить від MCS.\n"
@@ -270,7 +269,8 @@ class AntennaBlock(QWidget):
                 "" if antenna.rx_sensitivity_dbm is None else f"{antenna.rx_sensitivity_dbm:.2f}"
             )
             if antenna.channel_width_mhz is not None:
-                self._channel_width.setText(f"{antenna.channel_width_mhz:.3f}")
+                text = f"{antenna.channel_width_mhz:.4f}".rstrip("0").rstrip(".")
+                self._channel_width.setText(text)
             self._losses.setText("" if antenna.misc_losses_db is None else str(antenna.misc_losses_db))
             self._margin.setText("" if antenna.link_margin_db is None else str(antenna.link_margin_db))
             self._update_eirp_calculator()
@@ -523,7 +523,7 @@ class InspectorPanel(QWidget):
         self._link_kind.addItem("PtMP", LinkKind.PTMP)
         self._link_kind.addItem("Ethernet", LinkKind.ETHERNET)
         self._link_kind.currentIndexChanged.connect(self._toggle_link_fields)
-        self._label_frequency = QLabel("Частота (ГГц):")
+        self._label_frequency = QLabel("Частота (МГц):")
         self._label_ssid = QLabel("SSID:")
         self._label_password = QLabel("Пароль:")
         self._label_link_type = QLabel("Тип лінка:")
@@ -532,10 +532,10 @@ class InspectorPanel(QWidget):
         self._link_between = QLabel("—")
         self._link_distance = QLabel("—")
         self._link_frequency = QLineEdit(self)
-        freq_validator = QDoubleValidator(0.0001, 30.0, 6, self)
+        freq_validator = QDoubleValidator(0.1, 30000.0, 3, self)
         freq_validator.setLocale(QLocale.c())
         self._link_frequency.setValidator(freq_validator)
-        self._link_freq_hint = QLabel("Діапазон: 0.0001–30 ГГц.")
+        self._link_freq_hint = QLabel("Діапазон: 0.1–30000 МГц.")
         self._link_freq_hint.setStyleSheet("color: #9aa0a6; font-size: 11px;")
         self._link_frequency.textChanged.connect(self._validate_link_fields)
         self._link_ssid = QLineEdit(self)
@@ -568,6 +568,7 @@ class InspectorPanel(QWidget):
         link_layout.addRow(self._label_cable_type, self._cable_type)
         link_layout.addRow(self._apply_btn)
         link_layout.addRow(self._analyze_btn)
+        self._set_link_editable(False)
 
         content = QWidget(self)
         content_layout = QVBoxLayout(content)
@@ -585,6 +586,19 @@ class InspectorPanel(QWidget):
         self._link_group.setVisible(False)
         self._current_site_id: str | None = None
 
+    def _set_link_editable(self, editable: bool) -> None:
+        for field in (
+            self._link_name,
+            self._link_frequency,
+            self._link_ssid,
+            self._link_password,
+            self._link_notes,
+        ):
+            field.setReadOnly(not editable)
+        for widget in (self._link_kind, self._link_type, self._cable_type):
+            widget.setEnabled(editable)
+        self._apply_btn.setVisible(editable)
+        self._apply_btn.setEnabled(editable)
 
     def show_site(self, site: Site | None) -> None:
         if site is None:
@@ -645,7 +659,10 @@ class InspectorPanel(QWidget):
         )
         self._set_kind_combo(kind_value)
         if kind_value in ("ptp", "ptmp"):
-            self._link_frequency.setText("" if link.frequency_ghz is None else str(link.frequency_ghz))
+            if link.frequency_ghz is None:
+                self._link_frequency.setText("")
+            else:
+                self._link_frequency.setText(str(link.frequency_ghz * 1000.0))
             self._link_ssid.setText(link.ssid or "")
             self._link_password.setText(link.password or "")
         else:
@@ -744,6 +761,7 @@ class InspectorPanel(QWidget):
         new_antenna.rx_gain_dbi = payload.get("rx_gain_dbi")
         new_antenna.rx_height_m = payload.get("rx_height_m")
         new_antenna.rx_sensitivity_dbm = payload.get("rx_sensitivity_dbm")
+        new_antenna.channel_width_mhz = payload.get("channel_width_mhz")
         new_antenna.misc_losses_db = payload.get("misc_losses_db")
         new_antenna.link_margin_db = payload.get("link_margin_db")
         new_antenna.applied = False
@@ -824,7 +842,9 @@ class InspectorPanel(QWidget):
         payload = {
             "name": self._link_name.text().strip() or "Лінк",
             "kind": kind,
-            "frequency_ghz": float(self._link_frequency.text()) if is_wireless and self._link_frequency.text().strip() else None,
+            "frequency_ghz": (float(self._link_frequency.text()) / 1000.0)
+            if is_wireless and self._link_frequency.text().strip()
+            else None,
             "ssid": self._link_ssid.text().strip() if is_wireless else None,
             "password": self._link_password.text().strip() if is_wireless else None,
             "link_type": None if is_wireless else self._link_type.currentData(),

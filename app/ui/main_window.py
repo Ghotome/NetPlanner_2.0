@@ -4,6 +4,7 @@ from datetime import datetime
 import base64
 import io
 import os
+import sys
 from pathlib import Path
 from dataclasses import replace
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -42,6 +43,7 @@ from app.ui.link_dialog import SiteLinkDialog
 from app.ui.eirp_calculator import EirpCalculatorDialog
 from app.ui.horizon_calculator import HorizonCalculatorDialog
 from app.ui.watt_dbm_calculator import WattDbmCalculatorDialog
+from app.ui.frequency_calculator import FrequencyCalculatorDialog
 from app.ui.map_view import MapView
 from app.ui.project_tree import ProjectTree
 from app.ui.site_dialog import SiteDevicesDialog
@@ -81,6 +83,7 @@ class MainWindow(QMainWindow):
         self.map_view = MapView(
             on_show_context_menu=self._on_map_context_menu,
             on_show_site_menu=self._on_map_site_menu,
+            on_show_link_menu=self._on_map_link_menu,
             on_report_height=self._on_report_height,
             on_map_click=self._on_map_click,
             on_request_move_node=self._on_map_request_move_node,
@@ -98,6 +101,7 @@ class MainWindow(QMainWindow):
             on_open_eirp=self._open_eirp_calculator,
             on_open_horizon=self._open_horizon_calculator,
             on_open_power=self._open_power_calculator,
+            on_open_frequency=self._open_frequency_calculator,
             parent=self,
         )
 
@@ -106,7 +110,7 @@ class MainWindow(QMainWindow):
         self.inspector.link_analyze_requested.connect(self._on_link_analyze_requested)
         self.inspector.site_updated.connect(self._on_site_updated)
         self.monitoring_panel = MonitoringPanel(self)
-        self._elevation = ElevationProvider()
+        self._elevation = ElevationProvider(tile_cache_size=128)
         self._link_analyzer = LinkAnalyzer(self._elevation)
         self._coverage_calc = CoverageCalculator()
         self._bg_executor = ThreadPoolExecutor(max_workers=2)
@@ -120,6 +124,11 @@ class MainWindow(QMainWindow):
         self._prefetch_timer = QTimer(self)
         self._prefetch_timer.setSingleShot(True)
         self._prefetch_timer.timeout.connect(self._prefetch_elevation_for_view)
+        self._memory_limit_mb = 2048
+        self._memory_guard_timer = QTimer(self)
+        self._memory_guard_timer.setInterval(20000)
+        self._memory_guard_timer.timeout.connect(self._enforce_memory_limit)
+        self._memory_guard_timer.start()
         self._pending_bounds = None
         self._pending_zoom = None
         self._site_status_cache: dict[str, StatusState] = {}
@@ -401,8 +410,9 @@ class MainWindow(QMainWindow):
             location=GeoPoint(lat=lat, lon=lon),
         )
         self._project.add_site(site)
-        self.project_tree.add_node(site.id, f"{site.name} ({site.kind.value})")
-        self.map_view.add_marker(site.id, site.name, self._site_kind_label(site.kind.value), lat, lon)
+        site_kind_value = self._site_kind_value(site)
+        self.project_tree.add_node(site.id, f"{site.name} ({site_kind_value})")
+        self.map_view.add_marker(site.id, site.name, self._site_kind_label(site_kind_value), lat, lon)
         self.inspector.show_site(site)
         self._dirty = True
         self._ping_checker.set_devices(self._all_devices())
@@ -432,7 +442,7 @@ class MainWindow(QMainWindow):
                     )
                     self.map_view.update_link_meta(
                         link.id,
-                        self._link_label(link.kind),
+                        self._link_display_label(link),
                         self._link_kind_value(link.kind),
                         self._link_info(link, a),
                         link.distance_km,
@@ -487,7 +497,7 @@ class MainWindow(QMainWindow):
         new_name, ok = QInputDialog.getText(self, "Перейменувати сайт", "Нова назва:", text=site.name)
         if ok and new_name.strip():
             site.name = new_name.strip()
-            self.map_view.update_marker_label(site.id, site.name, self._site_kind_label(site.kind.value))
+            self.map_view.update_marker_label(site.id, site.name, self._site_kind_label(self._site_kind_value(site)))
             self._update_site_coverages(site)
             self.project_tree.set_project(self._project)
             self._dirty = True
@@ -556,6 +566,10 @@ class MainWindow(QMainWindow):
 
     def _open_power_calculator(self) -> None:
         dialog = WattDbmCalculatorDialog(self)
+        dialog.exec()
+
+    def _open_frequency_calculator(self) -> None:
+        dialog = FrequencyCalculatorDialog(self)
         dialog.exec()
 
     def _on_map_click(self, lat: float, lon: float) -> None:
@@ -665,6 +679,24 @@ class MainWindow(QMainWindow):
         if chosen == delete_action:
             self._delete_site(site_id)
 
+    def _on_map_link_menu(self, link_id: str, x: int, y: int) -> None:
+        link = self._project.links.get(link_id)
+        if not link:
+            return
+        self.project_tree.select_link(link_id)
+        site_a = self._project.sites.get(link.site_a_id)
+        site_b = self._project.sites.get(link.site_b_id)
+        self.inspector.show_link(
+            link,
+            site_a.name if site_a else "—",
+            site_b.name if site_b else "—",
+        )
+        menu = QMenu(self)
+        delete_action = menu.addAction("Видалити лінк")
+        chosen = menu.exec(self.map_view.mapToGlobal(QPoint(x, y)))
+        if chosen == delete_action:
+            self._on_map_request_delete_link(link_id)
+
     def _on_tree_selection_changed(self) -> None:
         item = self.project_tree.currentItem()
         if item is None:
@@ -708,6 +740,8 @@ class MainWindow(QMainWindow):
             return
         dialog = SiteDevicesDialog(site, self)
         dialog.exec()
+        self.project_tree.set_project(self._project)
+        self.project_tree.select_node(site.id)
         self._ping_checker.set_devices(self._all_devices())
         self._refresh_monitoring()
 
@@ -764,7 +798,7 @@ class MainWindow(QMainWindow):
         self.project_tree.set_project(self._project)
         self.map_view.add_link(
             link.id,
-            dialog.link_label(),
+            self._link_display_label(link),
             self._link_kind_value(link.kind),
             self._link_info(link, site_a),
             link.distance_km,
@@ -833,7 +867,7 @@ class MainWindow(QMainWindow):
             )
             self.map_view.update_link_meta(
                 link.id,
-                self._link_label(link.kind),
+                self._link_display_label(link),
                 self._link_kind_value(link.kind),
                 self._link_info(link, site_a),
                 link.distance_km,
@@ -858,7 +892,13 @@ class MainWindow(QMainWindow):
         if "name" in data and data["name"]:
             site.name = data["name"]
         if "kind" in data and data["kind"] is not None:
-            site.kind = data["kind"]
+            kind = data["kind"]
+            if isinstance(kind, str):
+                try:
+                    kind = SiteKind(kind)
+                except ValueError:
+                    kind = SiteKind.POP
+            site.kind = kind
         lat = data.get("lat")
         lon = data.get("lon")
         if lat is not None and lon is not None:
@@ -883,6 +923,7 @@ class MainWindow(QMainWindow):
             target.rx_gain_dbi = payload.get("rx_gain_dbi")
             target.rx_height_m = payload.get("rx_height_m")
             target.rx_sensitivity_dbm = payload.get("rx_sensitivity_dbm")
+            target.channel_width_mhz = payload.get("channel_width_mhz")
             target.misc_losses_db = payload.get("misc_losses_db")
             target.link_margin_db = payload.get("link_margin_db")
             if "applied" in payload:
@@ -939,7 +980,7 @@ class MainWindow(QMainWindow):
                     )
                     self.map_view.update_link_meta(
                         link.id,
-                        self._link_label(link.kind),
+                        self._link_display_label(link),
                         self._link_kind_value(link.kind),
                         self._link_info(link, site_a),
                         link.distance_km,
@@ -975,6 +1016,10 @@ class MainWindow(QMainWindow):
         }.get(kind_value, kind_value)
 
     @staticmethod
+    def _site_kind_value(site: Site) -> str:
+        return site.kind.value if hasattr(site.kind, "value") else str(site.kind)
+
+    @staticmethod
     def _link_kind_value(kind: object) -> str:
         return kind.value if hasattr(kind, "value") else str(kind)
 
@@ -982,6 +1027,12 @@ class MainWindow(QMainWindow):
     def _link_label(kind: object) -> str:
         value = kind.value if hasattr(kind, "value") else str(kind)
         return {"ptp": "PtP", "ptmp": "PtMP", "ethernet": "Ethernet"}.get(value, value)
+
+    @staticmethod
+    def _link_display_label(link: Link) -> str:
+        kind_label = MainWindow._link_label(link.kind)
+        name = link.name or "Лінк"
+        return f"{name} ({kind_label})"
 
     @staticmethod
     def _link_info(link: Link, site_a: Site | None = None) -> str:
@@ -995,9 +1046,10 @@ class MainWindow(QMainWindow):
         antenna_height = antenna.height_m if antenna else None
         notes_text = f"\nНотатки: {link.notes_text}" if link.notes_text else ""
         if kind_value in ("ptp", "ptmp"):
+            freq_mhz = (link.frequency_ghz * 1000.0) if link.frequency_ghz is not None else None
             return (
                 f"Тип: {kind_value}\\n"
-                f"Частота: {link.frequency_ghz or '-'} МГц\\n"
+                f"Частота: {freq_mhz or '-'} МГц\\n"
                 f"Висота антени: {antenna_height or '-'} м\\n"
                 f"SSID: {link.ssid or '-'}\\n"
                 f"Пароль: {link.password or '-'}\\n"
@@ -1110,7 +1162,7 @@ class MainWindow(QMainWindow):
             self.map_view.add_marker(
                 site.id,
                 site.name,
-                self._site_kind_label(site.kind.value),
+                self._site_kind_label(self._site_kind_value(site)),
                 site.location.lat,
                 site.location.lon,
             )
@@ -1121,7 +1173,7 @@ class MainWindow(QMainWindow):
             if site_a and site_b:
                 self.map_view.add_link(
                     link.id,
-                    self._link_label(link.kind),
+                    self._link_display_label(link),
                     self._link_kind_value(link.kind),
                     self._link_info(link, site_a),
                     link.distance_km,
@@ -1199,7 +1251,7 @@ class MainWindow(QMainWindow):
                     if site_a:
                         self.map_view.update_link_meta(
                             link.id,
-                            self._link_label(link.kind),
+                            self._link_display_label(link),
                             self._link_kind_value(link.kind),
                             self._link_info(link, site_a),
                             link.distance_km,
@@ -1214,7 +1266,9 @@ class MainWindow(QMainWindow):
                 new_name, ok = QInputDialog.getText(self, "Перейменувати сайт", "Нова назва:", text=site.name)
                 if ok and new_name.strip():
                     site.name = new_name.strip()
-                    self.map_view.update_marker_label(site.id, site.name, self._site_kind_label(site.kind.value))
+                    self.map_view.update_marker_label(
+                        site.id, site.name, self._site_kind_label(self._site_kind_value(site))
+                    )
                     self._update_site_coverages(site)
 
         self.project_tree.set_project(self._project)
@@ -1330,6 +1384,30 @@ class MainWindow(QMainWindow):
         if value > 360.0:
             return 360.0
         return value
+
+    @staticmethod
+    def _get_rss_mb() -> float | None:
+        try:
+            import psutil  # type: ignore
+
+            return psutil.Process(os.getpid()).memory_info().rss / (1024 * 1024)
+        except Exception:
+            try:
+                import resource
+
+                rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+                if sys.platform == "darwin":
+                    return rss / (1024 * 1024)
+                return rss / 1024
+            except Exception:
+                return None
+
+    def _enforce_memory_limit(self) -> None:
+        rss_mb = self._get_rss_mb()
+        if rss_mb is None or rss_mb < self._memory_limit_mb:
+            return
+        self._elevation.clear_cache()
+        self.map_view.clear_web_cache()
 
     def _set_busy(self, message: str | None) -> None:
         if message:
@@ -1581,7 +1659,7 @@ class MainWindow(QMainWindow):
         max_workers = min(4, os.cpu_count() or 4)
         cache_lock = Lock()
         elev_cache: dict[tuple[float, float], float | None] = {}
-        cache_limit = 60000
+        cache_limit = 20000
 
         x_km_list = [(i - center) * step_km for i in range(size)]
         y_km_list = [(center - j) * step_km for j in range(size)]

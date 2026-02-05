@@ -65,10 +65,11 @@ def project_from_dict(data: dict[str, Any]) -> NetworkProject:
 
 
 def site_to_dict(site: Site) -> dict[str, Any]:
+    kind_value = site.kind.value if hasattr(site.kind, "value") else str(site.kind)
     return {
         "id": site.id,
         "name": site.name,
-        "kind": site.kind.value,
+        "kind": kind_value,
         "location": geopoint_to_dict(site.location),
         "antennas": [antenna_to_dict(a) for a in site.antennas],
         "devices": {did: device_to_dict(dev) for did, dev in site.devices.items()},
@@ -143,10 +144,15 @@ def link_from_dict(data: dict[str, Any]) -> Link:
 
 
 def device_to_dict(device: Device) -> dict[str, Any]:
+    device_type_value = (
+        device.device_type.value
+        if hasattr(device.device_type, "value")
+        else str(device.device_type)
+    )
     return {
         "id": device.id,
         "name": device.name,
-        "device_type": device.device_type.value,
+        "device_type": device_type_value,
         "ip_address": device.ip_address,
         "port": device.port,
         "ports": device.ports,

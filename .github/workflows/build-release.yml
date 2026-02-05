@@ -1,5 +1,8 @@
 name: Build Release (All Platforms)
 
+permissions:
+  contents: write
+
 on:
   workflow_dispatch:
     inputs:
@@ -7,9 +10,6 @@ on:
         description: "Version for artifacts"
         required: false
         default: ""
-  push:
-    tags:
-      - "v*"
   pull_request:
     types: [closed]
 
@@ -127,7 +127,14 @@ jobs:
 
   macos:
     needs: prepare
-    runs-on: macos-latest
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            os: macos-13
+          - arch: arm64
+            os: macos-14
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -153,11 +160,11 @@ jobs:
             app/main.py
       - name: Package artifact
         run: |
-          ditto -c -k --sequesterRsrc --keepParent dist/NetPlanner NetPlanner-macos-${{ needs.prepare.outputs.version }}.zip
+          ditto -c -k --sequesterRsrc --keepParent dist/NetPlanner NetPlanner-macos-${{ matrix.arch }}-${{ needs.prepare.outputs.version }}.zip
       - uses: actions/upload-artifact@v4
         with:
-          name: NetPlanner-macos-${{ needs.prepare.outputs.version }}
-          path: NetPlanner-macos-${{ needs.prepare.outputs.version }}.zip
+          name: NetPlanner-macos-${{ matrix.arch }}-${{ needs.prepare.outputs.version }}
+          path: NetPlanner-macos-${{ matrix.arch }}-${{ needs.prepare.outputs.version }}.zip
 
   release:
     needs: [prepare, windows, ubuntu, macos]

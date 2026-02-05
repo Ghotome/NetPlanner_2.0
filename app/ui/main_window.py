@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from PySide6.QtGui import QAction, QPaletteдл
+from PySide6.QtGui import QAction, QPalette
 
 from app.coverage import CoverageCalculator
 from app.domain import AntennaParams, GeoPoint, Link, LinkKind, NetworkProject, Site, SiteKind, StatusState

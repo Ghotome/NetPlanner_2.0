@@ -28,7 +28,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          SHA="$(git rev-parse --short=8 HEAD)"
           VERSION_INPUT="${{ inputs.version }}"
           VERSION=""
           if [ -n "$VERSION_INPUT" ]; then
@@ -40,8 +39,10 @@ jobs:
             BODY="${{ github.event.pull_request.body }}"
             if echo "$TITLE" | grep -Eo 'v[0-9]+\.[0-9]+\.[0-9]+' >/dev/null; then
               VERSION="$(echo "$TITLE" | grep -Eo 'v[0-9]+\.[0-9]+\.[0-9]+' | head -n1 | sed 's/^v//')"
-            elif echo "$BODY" | grep -Eo '^version:\s*[0-9]+\.[0-9]+\.[0-9]+' -i >/dev/null; then
-              VERSION="$(echo "$BODY" | grep -Eo '^version:\s*[0-9]+\.[0-9]+\.[0-9]+' -i | head -n1 | sed -E 's/^[Vv]ersion:\s*//')"
+            elif echo "$BODY" | grep -Eo '[Vv]ersion:\s*[0-9]+\.[0-9]+\.[0-9]+' >/dev/null; then
+              VERSION="$(echo "$BODY" | grep -Eo '[Vv]ersion:\s*[0-9]+\.[0-9]+\.[0-9]+' | head -n1 | sed -E 's/^[Vv]ersion:\s*//')"
+            elif echo "$BODY" | grep -Eo 'v[0-9]+\.[0-9]+\.[0-9]+' >/dev/null; then
+              VERSION="$(echo "$BODY" | grep -Eo 'v[0-9]+\.[0-9]+\.[0-9]+' | head -n1 | sed 's/^v//')"
             fi
           else
             MSG="$(git log -1 --pretty=%s)"
@@ -50,10 +51,9 @@ jobs:
             fi
           fi
           if [ -z "$VERSION" ]; then
-            VERSION="0.0.0-${SHA}"
+            VERSION="0.0.0"
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
 
   windows:
     needs: prepare

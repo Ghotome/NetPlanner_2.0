@@ -1745,13 +1745,13 @@ class MainWindow(QMainWindow):
                         continue
                     delta_eirp = delta_eirp_for(dist_km, diff_loss, env_loss)
                     if delta_eirp >= 5.0:
-                        pixels[i, j] = (0, 200, 83, 200)
+                        pixels[i, j] = (0, 200, 83, 160)
                         tile_has = True
                     elif delta_eirp >= 0.0:
-                        pixels[i, j] = (255, 208, 0, 200)
+                        pixels[i, j] = (255, 208, 0, 160)
                         tile_has = True
                     elif delta_eirp >= -5.0:
-                        pixels[i, j] = (255, 23, 68, 200)
+                        pixels[i, j] = (255, 23, 68, 160)
                         tile_has = True
             if not tile_has:
                 return None

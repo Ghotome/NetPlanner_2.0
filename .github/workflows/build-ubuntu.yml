@@ -16,7 +16,7 @@ jobs:
       - name: Install system deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y imagemagick
+          sudo apt-get install -y imagemagick libfuse2
       - name: Build DEB
         run: |
           VERSION=${{ github.ref_name }} scripts/build_deb.sh

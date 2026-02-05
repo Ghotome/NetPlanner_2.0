@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version for artifacts (e.g. 2.3.1). Leave empty to use commit/PR."
+        description: "NetPlanner"
         required: false
-        default: ""
+        default: "2.0"
   pull_request:
     types: [closed]
 

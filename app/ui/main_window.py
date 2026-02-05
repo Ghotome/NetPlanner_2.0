@@ -923,6 +923,7 @@ class MainWindow(QMainWindow):
             target.rx_gain_dbi = payload.get("rx_gain_dbi")
             target.rx_height_m = payload.get("rx_height_m")
             target.rx_sensitivity_dbm = payload.get("rx_sensitivity_dbm")
+            target.channel_width_mhz = payload.get("channel_width_mhz")
             target.misc_losses_db = payload.get("misc_losses_db")
             target.link_margin_db = payload.get("link_margin_db")
             if "applied" in payload:

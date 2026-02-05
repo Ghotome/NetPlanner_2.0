@@ -144,10 +144,15 @@ def link_from_dict(data: dict[str, Any]) -> Link:
 
 
 def device_to_dict(device: Device) -> dict[str, Any]:
+    device_type_value = (
+        device.device_type.value
+        if hasattr(device.device_type, "value")
+        else str(device.device_type)
+    )
     return {
         "id": device.id,
         "name": device.name,
-        "device_type": device.device_type.value,
+        "device_type": device_type_value,
         "ip_address": device.ip_address,
         "port": device.port,
         "ports": device.ports,

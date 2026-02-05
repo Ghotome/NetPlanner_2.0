@@ -761,6 +761,7 @@ class InspectorPanel(QWidget):
         new_antenna.rx_gain_dbi = payload.get("rx_gain_dbi")
         new_antenna.rx_height_m = payload.get("rx_height_m")
         new_antenna.rx_sensitivity_dbm = payload.get("rx_sensitivity_dbm")
+        new_antenna.channel_width_mhz = payload.get("channel_width_mhz")
         new_antenna.misc_losses_db = payload.get("misc_losses_db")
         new_antenna.link_margin_db = payload.get("link_margin_db")
         new_antenna.applied = False

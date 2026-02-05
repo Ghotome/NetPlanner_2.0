@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from PySide6.QtGui import QAction, QPalette
+from PySide6.QtGui import QAction, QPaletteдл
 
 from app.coverage import CoverageCalculator
 from app.domain import AntennaParams, GeoPoint, Link, LinkKind, NetworkProject, Site, SiteKind, StatusState
@@ -1269,7 +1269,7 @@ class MainWindow(QMainWindow):
     def _site_status(site: Site) -> StatusState:
         devices = list(site.devices.values())
         if not devices:
-            return StatusState.DEGRADED
+            return StatusState.UNKNOWN
         uplinks = [d for d in devices if d.is_uplink]
         if any(d.status.state == StatusState.DOWN for d in uplinks):
             return StatusState.DOWN
@@ -1277,7 +1277,7 @@ class MainWindow(QMainWindow):
             return StatusState.DEGRADED
         if all(d.status.state == StatusState.UP for d in devices):
             return StatusState.UP
-        return StatusState.DEGRADED
+        return StatusState.UNKNOWN
 
     @staticmethod
     def _coverage_color(antenna_type: str | None) -> str:

@@ -1,4 +1,5 @@
 import sys
+import os
 
 from pathlib import Path
 
@@ -11,6 +12,11 @@ from app.ui.main_window import MainWindow
 
 
 def main() -> int:
+    flags = os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "")
+    extra = "--disable-gpu-rasterization"
+    if extra not in flags:
+        flags = f"{flags} {extra}".strip()
+        os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = flags
     QCoreApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts)
     app = QApplication(sys.argv)
     icon_path = Path(__file__).resolve().parents[1] / "app" / "ui" / "icons" / "app_icons" / "app_icon_96_96.png"

@@ -91,5 +91,5 @@ if ! command -v appimagetool >/dev/null 2>&1; then
 fi
 
 ARCH="$(uname -m)"
-appimagetool "$APPDIR" "$ROOT_DIR/NetPlanner-${ARCH}.AppImage"
+APPIMAGE_EXTRACT_AND_RUN=1 appimagetool "$APPDIR" "$ROOT_DIR/NetPlanner-${ARCH}.AppImage"
 echo "AppImage ready: NetPlanner-${ARCH}.AppImage"

@@ -19,18 +19,19 @@ jobs:
           python -m pip install -r requirements.txt
           python -m pip install pyinstaller
       - name: Build (portable onedir)
-        run: |
-          pyinstaller --noconfirm --windowed --name NetPlanner ^
-            --add-data "app\\web;app\\web" ^
-            --add-data "app\\ui\\icons;app\\ui\\icons" ^
-            --add-data "app\\icon.svg;app\\icon.svg" ^
-            --collect-data PySide6 ^
-            --collect-data PySide6.QtWebEngineCore ^
-            --collect-data PySide6.QtWebEngineWidgets ^
-            --collect-submodules PySide6 ^
-            --collect-submodules PySide6.QtWebEngineCore ^
-            --collect-submodules PySide6.QtWebEngineWidgets ^
-            app\\main.py
+        shell: cmd
+        run: >
+          pyinstaller --noconfirm --windowed --name NetPlanner
+          --add-data "app\\web;app\\web"
+          --add-data "app\\ui\\icons;app\\ui\\icons"
+          --add-data "app\\icon.svg;app\\icon.svg"
+          --collect-data PySide6
+          --collect-data PySide6.QtWebEngineCore
+          --collect-data PySide6.QtWebEngineWidgets
+          --collect-submodules PySide6
+          --collect-submodules PySide6.QtWebEngineCore
+          --collect-submodules PySide6.QtWebEngineWidgets
+          app\\main.py
       - name: Package artifact
         run: |
           Compress-Archive -Path dist\\NetPlanner\\* -DestinationPath NetPlanner-windows.zip

@@ -19,12 +19,21 @@ rm -rf "$PKG_DIR"
 mkdir -p \
   "$PKG_DIR/DEBIAN" \
   "$PKG_DIR/usr/bin" \
+  "$PKG_DIR/usr/lib/netplanner" \
   "$PKG_DIR/usr/share/applications" \
   "$PKG_DIR/usr/share/icons/hicolor/256x256/apps" \
   "$PKG_DIR/usr/share/icons/hicolor/96x96/apps"
 
-cp "$ROOT_DIR/dist/NetPlanner_2.0" "$PKG_DIR/usr/bin/NetPlanner_2.0"
-chmod 0755 "$PKG_DIR/usr/bin/NetPlanner_2.0"
+cp "$ROOT_DIR/dist/NetPlanner_2.0" "$PKG_DIR/usr/lib/netplanner/NetPlanner_2.0"
+chmod 0755 "$PKG_DIR/usr/lib/netplanner/NetPlanner_2.0"
+
+cat > "$PKG_DIR/usr/bin/netplanner" <<'EOF'
+#!/usr/bin/env bash
+export QT_QPA_PLATFORM=xcb
+export GDK_BACKEND=x11
+exec /usr/lib/netplanner/NetPlanner_2.0 "$@"
+EOF
+chmod 0755 "$PKG_DIR/usr/bin/netplanner"
 
 ICON_SRC="$ROOT_DIR/app/ui/icons/app_icons/app_icon_96_96.png"
 ICON_256="$PKG_DIR/usr/share/icons/hicolor/256x256/apps/netplanner_2.0.png"
@@ -42,7 +51,7 @@ cat > "$PKG_DIR/usr/share/applications/netplanner_2.0.desktop" <<'EOF'
 Type=Application
 Name=NetPlanner
 Comment=Network planning and simulation tool
-Exec=NetPlanner_2.0
+Exec=netplanner
 Icon=netplanner_2.0
 Categories=Network;Utility;
 Terminal=false

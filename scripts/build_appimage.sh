@@ -19,7 +19,13 @@ mkdir -p \
   "$APPDIR/usr/share/icons/hicolor/96x96/apps"
 
 cp "$ROOT_DIR/dist/NetPlanner_2.0" "$APPDIR/usr/bin/NetPlanner_2.0"
-ln -sf "usr/bin/NetPlanner_2.0" "$APPDIR/AppRun"
+cat > "$APPDIR/AppRun" <<'EOF'
+#!/usr/bin/env bash
+export QT_QPA_PLATFORM=xcb
+export GDK_BACKEND=x11
+exec "$APPDIR/usr/bin/NetPlanner_2.0" "$@"
+EOF
+chmod +x "$APPDIR/AppRun"
 
 ICON_PNG_SRC="$ROOT_DIR/app/ui/icons/app_icons/app_icon_96_96.png"
 ICON_PNG_256="$APPDIR/usr/share/icons/hicolor/256x256/apps/netplanner_2.0.png"

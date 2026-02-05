@@ -235,6 +235,7 @@
       let horizonLayer = null;
       let elevationEnabled = false;
       let coverageEnabled = true;
+      let coverageSuppressed = false;
       let dragLine = null;
       let dragTooltip = null;
       let dragSourceId = null;
@@ -641,7 +642,7 @@
       function setCoverageVisible(enabled) {
         coverageEnabled = !!enabled;
         updateToolStates();
-        if (enabled) {
+        if (enabled && !coverageSuppressed) {
           coverageLayer.addTo(map);
         } else {
           map.removeLayer(coverageLayer);
@@ -862,7 +863,39 @@
         bridge.prefetchElevation(b.getSouth(), b.getWest(), b.getNorth(), b.getEast(), map.getZoom());
       }
 
+      map.on('movestart', () => {
+        if (coverageEnabled && !coverageSuppressed) {
+          coverageSuppressed = true;
+          map.removeLayer(coverageLayer);
+        }
+      });
+
+      map.on('zoomstart', () => {
+        if (coverageEnabled && !coverageSuppressed) {
+          coverageSuppressed = true;
+          map.removeLayer(coverageLayer);
+        }
+      });
+
       map.on('moveend', () => {
+        if (coverageSuppressed) {
+          coverageSuppressed = false;
+          if (coverageEnabled) {
+            coverageLayer.addTo(map);
+          }
+        }
+        if (map.hasLayer(elevationLayer)) {
+          requestElevationPrefetch();
+        }
+      });
+
+      map.on('zoomend', () => {
+        if (coverageSuppressed) {
+          coverageSuppressed = false;
+          if (coverageEnabled) {
+            coverageLayer.addTo(map);
+          }
+        }
         if (map.hasLayer(elevationLayer)) {
           requestElevationPrefetch();
         }

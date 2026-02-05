@@ -4,6 +4,7 @@ from datetime import datetime
 import base64
 import io
 import os
+import sys
 from pathlib import Path
 from dataclasses import replace
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -109,7 +110,7 @@ class MainWindow(QMainWindow):
         self.inspector.link_analyze_requested.connect(self._on_link_analyze_requested)
         self.inspector.site_updated.connect(self._on_site_updated)
         self.monitoring_panel = MonitoringPanel(self)
-        self._elevation = ElevationProvider()
+        self._elevation = ElevationProvider(tile_cache_size=128)
         self._link_analyzer = LinkAnalyzer(self._elevation)
         self._coverage_calc = CoverageCalculator()
         self._bg_executor = ThreadPoolExecutor(max_workers=2)
@@ -123,6 +124,11 @@ class MainWindow(QMainWindow):
         self._prefetch_timer = QTimer(self)
         self._prefetch_timer.setSingleShot(True)
         self._prefetch_timer.timeout.connect(self._prefetch_elevation_for_view)
+        self._memory_limit_mb = 2048
+        self._memory_guard_timer = QTimer(self)
+        self._memory_guard_timer.setInterval(20000)
+        self._memory_guard_timer.timeout.connect(self._enforce_memory_limit)
+        self._memory_guard_timer.start()
         self._pending_bounds = None
         self._pending_zoom = None
         self._site_status_cache: dict[str, StatusState] = {}
@@ -404,8 +410,9 @@ class MainWindow(QMainWindow):
             location=GeoPoint(lat=lat, lon=lon),
         )
         self._project.add_site(site)
-        self.project_tree.add_node(site.id, f"{site.name} ({site.kind.value})")
-        self.map_view.add_marker(site.id, site.name, self._site_kind_label(site.kind.value), lat, lon)
+        site_kind_value = self._site_kind_value(site)
+        self.project_tree.add_node(site.id, f"{site.name} ({site_kind_value})")
+        self.map_view.add_marker(site.id, site.name, self._site_kind_label(site_kind_value), lat, lon)
         self.inspector.show_site(site)
         self._dirty = True
         self._ping_checker.set_devices(self._all_devices())
@@ -490,7 +497,7 @@ class MainWindow(QMainWindow):
         new_name, ok = QInputDialog.getText(self, "Перейменувати сайт", "Нова назва:", text=site.name)
         if ok and new_name.strip():
             site.name = new_name.strip()
-            self.map_view.update_marker_label(site.id, site.name, self._site_kind_label(site.kind.value))
+            self.map_view.update_marker_label(site.id, site.name, self._site_kind_label(self._site_kind_value(site)))
             self._update_site_coverages(site)
             self.project_tree.set_project(self._project)
             self._dirty = True
@@ -733,6 +740,8 @@ class MainWindow(QMainWindow):
             return
         dialog = SiteDevicesDialog(site, self)
         dialog.exec()
+        self.project_tree.set_project(self._project)
+        self.project_tree.select_node(site.id)
         self._ping_checker.set_devices(self._all_devices())
         self._refresh_monitoring()
 
@@ -883,7 +892,13 @@ class MainWindow(QMainWindow):
         if "name" in data and data["name"]:
             site.name = data["name"]
         if "kind" in data and data["kind"] is not None:
-            site.kind = data["kind"]
+            kind = data["kind"]
+            if isinstance(kind, str):
+                try:
+                    kind = SiteKind(kind)
+                except ValueError:
+                    kind = SiteKind.POP
+            site.kind = kind
         lat = data.get("lat")
         lon = data.get("lon")
         if lat is not None and lon is not None:
@@ -998,6 +1013,10 @@ class MainWindow(QMainWindow):
             "pop": "POP",
             "cpe": "CPE",
         }.get(kind_value, kind_value)
+
+    @staticmethod
+    def _site_kind_value(site: Site) -> str:
+        return site.kind.value if hasattr(site.kind, "value") else str(site.kind)
 
     @staticmethod
     def _link_kind_value(kind: object) -> str:
@@ -1142,7 +1161,7 @@ class MainWindow(QMainWindow):
             self.map_view.add_marker(
                 site.id,
                 site.name,
-                self._site_kind_label(site.kind.value),
+                self._site_kind_label(self._site_kind_value(site)),
                 site.location.lat,
                 site.location.lon,
             )
@@ -1246,7 +1265,9 @@ class MainWindow(QMainWindow):
                 new_name, ok = QInputDialog.getText(self, "Перейменувати сайт", "Нова назва:", text=site.name)
                 if ok and new_name.strip():
                     site.name = new_name.strip()
-                    self.map_view.update_marker_label(site.id, site.name, self._site_kind_label(site.kind.value))
+                    self.map_view.update_marker_label(
+                        site.id, site.name, self._site_kind_label(self._site_kind_value(site))
+                    )
                     self._update_site_coverages(site)
 
         self.project_tree.set_project(self._project)
@@ -1362,6 +1383,30 @@ class MainWindow(QMainWindow):
         if value > 360.0:
             return 360.0
         return value
+
+    @staticmethod
+    def _get_rss_mb() -> float | None:
+        try:
+            import psutil  # type: ignore
+
+            return psutil.Process(os.getpid()).memory_info().rss / (1024 * 1024)
+        except Exception:
+            try:
+                import resource
+
+                rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+                if sys.platform == "darwin":
+                    return rss / (1024 * 1024)
+                return rss / 1024
+            except Exception:
+                return None
+
+    def _enforce_memory_limit(self) -> None:
+        rss_mb = self._get_rss_mb()
+        if rss_mb is None or rss_mb < self._memory_limit_mb:
+            return
+        self._elevation.clear_cache()
+        self.map_view.clear_web_cache()
 
     def _set_busy(self, message: str | None) -> None:
         if message:
@@ -1613,7 +1658,7 @@ class MainWindow(QMainWindow):
         max_workers = min(4, os.cpu_count() or 4)
         cache_lock = Lock()
         elev_cache: dict[tuple[float, float], float | None] = {}
-        cache_limit = 60000
+        cache_limit = 20000
 
         x_km_list = [(i - center) * step_km for i in range(size)]
         y_km_list = [(center - j) * step_km for j in range(size)]

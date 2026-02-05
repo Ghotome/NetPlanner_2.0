@@ -6,7 +6,7 @@ import json
 
 from PySide6.QtCore import QObject, QUrl, Slot
 from PySide6.QtWebChannel import QWebChannel
-from PySide6.QtWebEngineCore import QWebEngineSettings
+from PySide6.QtWebEngineCore import QWebEngineSettings, QWebEngineProfile
 from PySide6.QtWebEngineWidgets import QWebEngineView
 
 
@@ -203,6 +203,12 @@ class MapView(QWebEngineView):
         self.settings().setAttribute(
             QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True
         )
+        profile = self.page().profile()
+        profile.setHttpCacheMaximumSize(256 * 1024 * 1024)
+        try:
+            profile.setHttpCacheType(QWebEngineProfile.HttpCacheType.MemoryHttpCache)
+        except Exception:
+            pass
 
         map_path = Path(__file__).resolve().parents[1] / "web" / "map.html"
         self.setUrl(QUrl.fromLocalFile(map_path.as_posix()))
@@ -213,6 +219,12 @@ class MapView(QWebEngineView):
             "(() => { const b = map.getBounds(); return [b.getSouth(), b.getWest(), b.getNorth(), b.getEast(), map.getZoom()]; })();",
             callback,
         )
+
+    def clear_web_cache(self) -> None:
+        try:
+            self.page().profile().clearHttpCache()
+        except Exception:
+            pass
 
     def add_marker(self, node_id: str, name: str, kind: str, lat: float, lon: float) -> None:
         js = (

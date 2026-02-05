@@ -250,6 +250,7 @@
           <button class="tool-submenu-item" id="calc-eirp">Калькулятор EIRP</button>
           <button class="tool-submenu-item" id="calc-horizon">Калькулятор горизонту</button>
           <button class="tool-submenu-item" id="calc-power">Вт ↔ dBm</button>
+          <button class="tool-submenu-item" id="calc-frequency">кГц ↔ МГц ↔ ГГц</button>
         `;
         map.getContainer().appendChild(calculatorsMenu);
         const eirpBtn = calculatorsMenu.querySelector('#calc-eirp');
@@ -279,6 +280,16 @@
             hideCalculatorsMenu();
             if (bridge && bridge.openPowerCalculator) {
               bridge.openPowerCalculator();
+            }
+          };
+        }
+        const frequencyBtn = calculatorsMenu.querySelector('#calc-frequency');
+        if (frequencyBtn) {
+          frequencyBtn.onclick = (evt) => {
+            evt.stopPropagation();
+            hideCalculatorsMenu();
+            if (bridge && bridge.openFrequencyCalculator) {
+              bridge.openFrequencyCalculator();
             }
           };
         }
@@ -690,17 +701,22 @@
         const color = kind === 'ptp' ? '#2563eb' : (kind === 'ptmp' ? '#10b981' : '#f97316');
         const line = L.polyline([[latA, lonA], [latB, lonB]], { color: color, weight: 3 });
         line.addTo(map);
-        const labelText = distanceKm ? `${label} • ${distanceKm.toFixed(2)} км` : label;
+        const labelText = label;
         line.bindTooltip(labelText, { permanent: true, direction: 'center' });
-        line.on('click', () => {
+        line.on('click', (e) => {
           if (bridge) { bridge.selectLink(id); }
-        });
-        line.on('contextmenu', () => {
-          if (bridge) { bridge.requestDeleteLink(id); }
+          if (bridge) { bridge.showLinkMenu(id, e.originalEvent.clientX, e.originalEvent.clientY); }
         });
         line.on('mouseover', (e) => {
           const entry = links.get(id);
           if (!entry) { return; }
+          if (entry.distanceTooltip) { map.removeLayer(entry.distanceTooltip); entry.distanceTooltip = null; }
+          if (entry.distanceKm) {
+            entry.distanceTooltip = L.tooltip({ direction: 'top', offset: [0, -8], opacity: 0.9 })
+              .setLatLng(e.latlng)
+              .setContent(`${entry.distanceKm.toFixed(2)} км`);
+            entry.distanceTooltip.addTo(map);
+          }
           entry.timer = setTimeout(() => {
             entry.popup = L.popup({ closeButton: false, autoClose: false })
               .setLatLng(e.latlng)
@@ -713,8 +729,9 @@
           if (!entry) { return; }
           if (entry.timer) { clearTimeout(entry.timer); entry.timer = null; }
           if (entry.popup) { map.closePopup(entry.popup); entry.popup = null; }
+          if (entry.distanceTooltip) { map.removeLayer(entry.distanceTooltip); entry.distanceTooltip = null; }
         });
-        links.set(id, { line, info, timer: null, popup: null, label, distanceKm });
+        links.set(id, { line, info, timer: null, popup: null, label, distanceKm, distanceTooltip: null });
       }
 
       function updateLink(id, latA, lonA, latB, lonB) {
@@ -729,7 +746,7 @@
         const color = kind === 'ptp' ? '#2563eb' : (kind === 'ptmp' ? '#10b981' : '#f97316');
         entry.line.setStyle({ color: color });
         const tooltip = entry.line.getTooltip();
-        const labelText = distanceKm ? `${label} • ${distanceKm.toFixed(2)} км` : label;
+        const labelText = label;
         if (tooltip) { tooltip.setContent(labelText); }
         entry.info = info;
         entry.label = label;

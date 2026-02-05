@@ -42,6 +42,7 @@ from app.ui.link_dialog import SiteLinkDialog
 from app.ui.eirp_calculator import EirpCalculatorDialog
 from app.ui.horizon_calculator import HorizonCalculatorDialog
 from app.ui.watt_dbm_calculator import WattDbmCalculatorDialog
+from app.ui.frequency_calculator import FrequencyCalculatorDialog
 from app.ui.map_view import MapView
 from app.ui.project_tree import ProjectTree
 from app.ui.site_dialog import SiteDevicesDialog
@@ -81,6 +82,7 @@ class MainWindow(QMainWindow):
         self.map_view = MapView(
             on_show_context_menu=self._on_map_context_menu,
             on_show_site_menu=self._on_map_site_menu,
+            on_show_link_menu=self._on_map_link_menu,
             on_report_height=self._on_report_height,
             on_map_click=self._on_map_click,
             on_request_move_node=self._on_map_request_move_node,
@@ -98,6 +100,7 @@ class MainWindow(QMainWindow):
             on_open_eirp=self._open_eirp_calculator,
             on_open_horizon=self._open_horizon_calculator,
             on_open_power=self._open_power_calculator,
+            on_open_frequency=self._open_frequency_calculator,
             parent=self,
         )
 
@@ -432,7 +435,7 @@ class MainWindow(QMainWindow):
                     )
                     self.map_view.update_link_meta(
                         link.id,
-                        self._link_label(link.kind),
+                        self._link_display_label(link),
                         self._link_kind_value(link.kind),
                         self._link_info(link, a),
                         link.distance_km,
@@ -558,6 +561,10 @@ class MainWindow(QMainWindow):
         dialog = WattDbmCalculatorDialog(self)
         dialog.exec()
 
+    def _open_frequency_calculator(self) -> None:
+        dialog = FrequencyCalculatorDialog(self)
+        dialog.exec()
+
     def _on_map_click(self, lat: float, lon: float) -> None:
         if self._horizon_mode:
             self._horizon_points.append((lat, lon))
@@ -665,6 +672,24 @@ class MainWindow(QMainWindow):
         if chosen == delete_action:
             self._delete_site(site_id)
 
+    def _on_map_link_menu(self, link_id: str, x: int, y: int) -> None:
+        link = self._project.links.get(link_id)
+        if not link:
+            return
+        self.project_tree.select_link(link_id)
+        site_a = self._project.sites.get(link.site_a_id)
+        site_b = self._project.sites.get(link.site_b_id)
+        self.inspector.show_link(
+            link,
+            site_a.name if site_a else "—",
+            site_b.name if site_b else "—",
+        )
+        menu = QMenu(self)
+        delete_action = menu.addAction("Видалити лінк")
+        chosen = menu.exec(self.map_view.mapToGlobal(QPoint(x, y)))
+        if chosen == delete_action:
+            self._on_map_request_delete_link(link_id)
+
     def _on_tree_selection_changed(self) -> None:
         item = self.project_tree.currentItem()
         if item is None:
@@ -764,7 +789,7 @@ class MainWindow(QMainWindow):
         self.project_tree.set_project(self._project)
         self.map_view.add_link(
             link.id,
-            dialog.link_label(),
+            self._link_display_label(link),
             self._link_kind_value(link.kind),
             self._link_info(link, site_a),
             link.distance_km,
@@ -833,7 +858,7 @@ class MainWindow(QMainWindow):
             )
             self.map_view.update_link_meta(
                 link.id,
-                self._link_label(link.kind),
+                self._link_display_label(link),
                 self._link_kind_value(link.kind),
                 self._link_info(link, site_a),
                 link.distance_km,
@@ -939,7 +964,7 @@ class MainWindow(QMainWindow):
                     )
                     self.map_view.update_link_meta(
                         link.id,
-                        self._link_label(link.kind),
+                        self._link_display_label(link),
                         self._link_kind_value(link.kind),
                         self._link_info(link, site_a),
                         link.distance_km,
@@ -984,6 +1009,12 @@ class MainWindow(QMainWindow):
         return {"ptp": "PtP", "ptmp": "PtMP", "ethernet": "Ethernet"}.get(value, value)
 
     @staticmethod
+    def _link_display_label(link: Link) -> str:
+        kind_label = MainWindow._link_label(link.kind)
+        name = link.name or "Лінк"
+        return f"{name} ({kind_label})"
+
+    @staticmethod
     def _link_info(link: Link, site_a: Site | None = None) -> str:
         kind_value = link.kind.value if hasattr(link.kind, "value") else str(link.kind)
         distance_text = f"{link.distance_km:.2f} км" if link.distance_km is not None else "-"
@@ -995,9 +1026,10 @@ class MainWindow(QMainWindow):
         antenna_height = antenna.height_m if antenna else None
         notes_text = f"\nНотатки: {link.notes_text}" if link.notes_text else ""
         if kind_value in ("ptp", "ptmp"):
+            freq_mhz = (link.frequency_ghz * 1000.0) if link.frequency_ghz is not None else None
             return (
                 f"Тип: {kind_value}\\n"
-                f"Частота: {link.frequency_ghz or '-'} МГц\\n"
+                f"Частота: {freq_mhz or '-'} МГц\\n"
                 f"Висота антени: {antenna_height or '-'} м\\n"
                 f"SSID: {link.ssid or '-'}\\n"
                 f"Пароль: {link.password or '-'}\\n"
@@ -1121,7 +1153,7 @@ class MainWindow(QMainWindow):
             if site_a and site_b:
                 self.map_view.add_link(
                     link.id,
-                    self._link_label(link.kind),
+                    self._link_display_label(link),
                     self._link_kind_value(link.kind),
                     self._link_info(link, site_a),
                     link.distance_km,
@@ -1199,7 +1231,7 @@ class MainWindow(QMainWindow):
                     if site_a:
                         self.map_view.update_link_meta(
                             link.id,
-                            self._link_label(link.kind),
+                            self._link_display_label(link),
                             self._link_kind_value(link.kind),
                             self._link_info(link, site_a),
                             link.distance_km,

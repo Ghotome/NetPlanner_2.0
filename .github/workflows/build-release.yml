@@ -10,9 +10,6 @@ on:
         description: "Version for artifacts"
         required: false
         default: ""
-  push:
-    tags:
-      - "v*"
   pull_request:
     types: [closed]
 

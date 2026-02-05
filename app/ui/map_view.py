@@ -15,6 +15,7 @@ class MapBridge(QObject):
         self,
         on_show_context_menu: Callable[[float, float, int, int], None],
         on_show_site_menu: Callable[[str, int, int], None],
+        on_show_link_menu: Callable[[str, int, int], None],
         on_report_height: Callable[[float, float, int, int], None],
         on_map_click: Callable[[float, float], None],
         on_request_move_node: Callable[[str, float, float, float, float], None],
@@ -32,10 +33,12 @@ class MapBridge(QObject):
         on_open_eirp: Callable[[], None],
         on_open_horizon: Callable[[], None],
         on_open_power: Callable[[], None],
+        on_open_frequency: Callable[[], None],
     ) -> None:
         super().__init__()
         self._on_show_context_menu = on_show_context_menu
         self._on_show_site_menu = on_show_site_menu
+        self._on_show_link_menu = on_show_link_menu
         self._on_report_height = on_report_height
         self._on_map_click = on_map_click
         self._on_request_move_node = on_request_move_node
@@ -53,6 +56,7 @@ class MapBridge(QObject):
         self._on_open_eirp = on_open_eirp
         self._on_open_horizon = on_open_horizon
         self._on_open_power = on_open_power
+        self._on_open_frequency = on_open_frequency
 
     @Slot(float, float, int, int)
     def showContextMenu(self, lat: float, lon: float, x: int, y: int) -> None:
@@ -61,6 +65,10 @@ class MapBridge(QObject):
     @Slot(str, int, int)
     def showSiteMenu(self, site_id: str, x: int, y: int) -> None:
         self._on_show_site_menu(site_id, x, y)
+
+    @Slot(str, int, int)
+    def showLinkMenu(self, link_id: str, x: int, y: int) -> None:
+        self._on_show_link_menu(link_id, x, y)
 
     @Slot(float, float, int, int)
     def reportHeight(self, lat: float, lon: float, x: int, y: int) -> None:
@@ -120,6 +128,10 @@ class MapBridge(QObject):
     def openPowerCalculator(self) -> None:
         self._on_open_power()
 
+    @Slot()
+    def openFrequencyCalculator(self) -> None:
+        self._on_open_frequency()
+
     @Slot(float, float, float, float, int)
     def prefetchElevation(
         self, south: float, west: float, north: float, east: float, zoom: int
@@ -140,6 +152,7 @@ class MapView(QWebEngineView):
         self,
         on_show_context_menu: Callable[[float, float, int, int], None],
         on_show_site_menu: Callable[[str, int, int], None],
+        on_show_link_menu: Callable[[str, int, int], None],
         on_report_height: Callable[[float, float, int, int], None],
         on_map_click: Callable[[float, float], None],
         on_request_move_node: Callable[[str, float, float, float, float], None],
@@ -157,12 +170,14 @@ class MapView(QWebEngineView):
         on_open_eirp: Callable[[], None],
         on_open_horizon: Callable[[], None],
         on_open_power: Callable[[], None],
+        on_open_frequency: Callable[[], None],
         parent=None,
     ) -> None:
         super().__init__(parent)
         self._bridge = MapBridge(
             on_show_context_menu,
             on_show_site_menu,
+            on_show_link_menu,
             on_report_height,
             on_map_click,
             on_request_move_node,
@@ -180,6 +195,7 @@ class MapView(QWebEngineView):
             on_open_eirp,
             on_open_horizon,
             on_open_power,
+            on_open_frequency,
         )
         self._channel = QWebChannel(self)
         self._channel.registerObject("bridge", self._bridge)

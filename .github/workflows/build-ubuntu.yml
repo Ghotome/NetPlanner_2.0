@@ -1,0 +1,35 @@
+name: Build Ubuntu
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [publish]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y imagemagick
+      - name: Build DEB
+        run: |
+          VERSION=${{ github.ref_name }} scripts/build_deb.sh
+      - name: Build AppImage
+        run: |
+          scripts/build_appimage.sh
+      - name: Upload DEB
+        uses: actions/upload-artifact@v4
+        with:
+          name: NetPlanner-ubuntu-deb
+          path: build/deb/*.deb
+      - name: Upload AppImage
+        uses: actions/upload-artifact@v4
+        with:
+          name: NetPlanner-ubuntu-appimage
+          path: NetPlanner-*.AppImage

@@ -11,4 +11,4 @@ __pycache__/
 AppDir/
 dist/
 build/
-cache/~/python/oop_project/*.AppImage
+cache/~/python/oop_project/*_AppImage

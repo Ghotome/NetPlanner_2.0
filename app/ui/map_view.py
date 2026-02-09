@@ -282,6 +282,12 @@ class MapView(QWebEngineView):
             f"updateCoverageRasterTile({site_id!r}, {data_url!r}, {bounds!r});"
         )
 
+    def update_coverage_raster_tiles(self, site_id: str, tiles: list[dict]) -> None:
+        if not tiles:
+            return
+        tiles_json = json.dumps(tiles, ensure_ascii=False)
+        self.page().runJavaScript(f"updateCoverageRasterTiles({site_id!r}, {tiles_json});")
+
     def update_coverage_bands(self, site_id: str, bands: list, tooltip: str) -> None:
         bands_json = json.dumps(bands, ensure_ascii=False)
         tooltip_json = json.dumps(tooltip, ensure_ascii=False)

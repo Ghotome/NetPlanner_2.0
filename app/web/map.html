@@ -626,6 +626,29 @@
         existing.push(overlay);
       }
 
+      function updateCoverageRasterTiles(id, tiles) {
+        if (!Array.isArray(tiles) || tiles.length === 0) { return; }
+        let existing = coverages.get(id);
+        if (existing && !Array.isArray(existing)) {
+          coverageLayer.removeLayer(existing);
+          existing = null;
+        }
+        if (!existing) {
+          existing = [];
+          coverages.set(id, existing);
+        }
+        tiles.forEach((tile) => {
+          if (!tile || !tile.data_url || !tile.bounds) { return; }
+          const bounds = tile.bounds;
+          const latLngBounds = Array.isArray(bounds[0])
+            ? bounds
+            : [[bounds[0], bounds[1]], [bounds[2], bounds[3]]];
+          const overlay = L.imageOverlay(tile.data_url, latLngBounds, { opacity: 1, pane: 'coveragePane' });
+          overlay.addTo(coverageLayer);
+          existing.push(overlay);
+        });
+      }
+
       function removeCoverage(id) {
         const entry = coverages.get(id);
         if (!entry) { return; }
@@ -986,6 +1009,7 @@
       window.updateCoveragePoints = updateCoveragePoints;
       window.updateCoverageBands = updateCoverageBands;
       window.updateCoverageRasterTile = updateCoverageRasterTile;
+      window.updateCoverageRasterTiles = updateCoverageRasterTiles;
       window.removeCoverage = removeCoverage;
       window.setCoverageVisible = setCoverageVisible;
       window.clearCoverages = clearCoverages;

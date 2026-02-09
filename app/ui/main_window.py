@@ -47,7 +47,6 @@ from app.ui.frequency_calculator import FrequencyCalculatorDialog
 from app.ui.map_view import MapView
 from app.ui.project_tree import ProjectTree
 from app.ui.site_dialog import SiteDevicesDialog
-from app.ui.monitoring_panel import MonitoringPanel
 
 try:
     from PIL import Image, ImageFilter
@@ -64,6 +63,7 @@ class MainWindow(QMainWindow):
     def __init__(self, project: NetworkProject, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._project = project
+        self._cleanup_done = False
 
         self.setWindowTitle("NetPlanner 2.0")
         self.resize(1280, 720)
@@ -158,7 +158,6 @@ class MainWindow(QMainWindow):
         self._init_menu_bar()
         self._apply_styles()
         self._site_counter = 1
-        self.destroyed.connect(self._cleanup_on_close)
         self._pending_link_site_id: str | None = None
         self._height_mode = False
         self._height_timer = QTimer(self)
@@ -1132,9 +1131,21 @@ class MainWindow(QMainWindow):
         future.add_done_callback(lambda f, key=coverage_id, jid=job_id: self._on_coverage_done(key, jid, f))
 
     def _cleanup_on_close(self) -> None:
+        if self._cleanup_done:
+            return
+        self._cleanup_done = True
+        self._prefetch_timer.stop()
+        self._memory_guard_timer.stop()
+        self._monitor_timer.stop()
+        self._height_timer.stop()
+        self._autosave_timer.stop()
+        self._ping_checker.stop(shutdown_executor=True)
         if self._dirty:
             self._autosave()
-        self._bg_executor.shutdown(wait=False)
+        try:
+            self._bg_executor.shutdown(wait=False, cancel_futures=True)
+        except TypeError:
+            self._bg_executor.shutdown(wait=False)
         self._elevation.clear_cache()
 
     def _new_project(self) -> None:

@@ -7,7 +7,6 @@ import sys
 import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
 from typing import Deque, Iterable, Optional
 
 from PySide6.QtCore import QObject, QTimer, Signal
@@ -30,6 +29,8 @@ class PingChecker(QObject):
         self._device_queue: Deque[Device] = deque()
         self._in_flight: set[str] = set()
         self._next_cycle_ts = 0.0
+        self._running = False
+        self._executor_shutdown = False
         self._dispatch_timer.setInterval(self._compute_dispatch_interval())
         self.status_updated.connect(self._on_ping_completed)
 
@@ -39,14 +40,29 @@ class PingChecker(QObject):
         self._dispatch_timer.setInterval(self._compute_dispatch_interval())
 
     def start(self) -> None:
+        if self._executor_shutdown:
+            return
+        self._running = True
         self._reset_queue()
         self._next_cycle_ts = time.monotonic() + (self._interval_ms / 1000.0)
         self._dispatch_timer.start()
 
-    def stop(self) -> None:
+    def stop(self, shutdown_executor: bool = False) -> None:
+        self._running = False
         self._dispatch_timer.stop()
+        self._device_queue.clear()
+        self._in_flight.clear()
+        if not shutdown_executor or self._executor_shutdown:
+            return
+        self._executor_shutdown = True
+        try:
+            self._executor.shutdown(wait=False, cancel_futures=True)
+        except TypeError:
+            self._executor.shutdown(wait=False)
 
     def _dispatch_tick(self) -> None:
+        if not self._running or self._executor_shutdown:
+            return
         now = time.monotonic()
         if now >= self._next_cycle_ts and not self._device_queue:
             self._reset_queue()
@@ -59,7 +75,10 @@ class PingChecker(QObject):
         if not device.ip_address:
             return
         self._in_flight.add(device.id)
-        self._executor.submit(self._ping, device)
+        try:
+            self._executor.submit(self._ping, device)
+        except RuntimeError:
+            self._in_flight.discard(device.id)
 
     def _reset_queue(self) -> None:
         self._device_queue.clear()

@@ -779,10 +779,15 @@ class MainWindow(QMainWindow):
     def _request_site_coverage_update(self, site_id: str) -> None:
         if not site_id or site_id not in self._project.sites:
             return
+        if not self._coverage_action.isChecked():
+            return
         self._pending_coverage_site_ids.add(site_id)
         self._coverage_refresh_timer.start(180)
 
     def _flush_site_coverage_updates(self) -> None:
+        if not self._coverage_action.isChecked():
+            self._pending_coverage_site_ids.clear()
+            return
         if not self._pending_coverage_site_ids:
             return
         site_ids = list(self._pending_coverage_site_ids)
@@ -983,7 +988,7 @@ class MainWindow(QMainWindow):
                 antenna = AntennaParams(id=antenna_id)
                 site.antennas.append(antenna)
             update_antenna(antenna, antenna_payload)
-            if data.get("apply"):
+            if data.get("apply") and self._coverage_action.isChecked():
                 antenna.applied = True
                 self._update_antenna_coverage(site, antenna)
 
@@ -1004,7 +1009,7 @@ class MainWindow(QMainWindow):
                 coverage_id = self._coverage_key(site.id, removed_id)
                 self.map_view.remove_coverage(coverage_id)
                 self._cancel_coverage_job(coverage_id, clear_assignment=True)
-            if data.get("apply_all"):
+            if data.get("apply_all") and self._coverage_action.isChecked():
                 for antenna in site.antennas:
                     antenna.applied = True
                     self._update_antenna_coverage(site, antenna)

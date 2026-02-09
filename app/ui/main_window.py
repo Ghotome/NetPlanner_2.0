@@ -654,6 +654,7 @@ class MainWindow(QMainWindow):
             return
         lat1, lon1 = a
         lat2, lon2 = b
+
         samples = 40
         total_km = self._distance_km(lat1, lon1, lat2, lon2)
         distances = []
@@ -1998,9 +1999,12 @@ class MainWindow(QMainWindow):
         i_min, i_max, j_min, j_max = sector_bounds_xy()
 
         def compute_tile(tile_x: int, tile_y: int, tile_w: int, tile_h: int) -> dict | None:
-            image = Image.new("RGBA", (tile_w, tile_h), (0, 0, 0, 0))
+            tile_pad = 2
+            render_w = tile_w + (2 * tile_pad)
+            render_h = tile_h + (2 * tile_pad)
+            image = Image.new("RGBA", (render_w, render_h), (0, 0, 0, 0))
             pixels = image.load()
-            tile_has = False
+            tile_has_samples = False
             local_cache: dict[tuple[float, float], float | None] = {}
 
             def elev_local(lat_q: float, lon_q: float) -> float | None:
@@ -2016,18 +2020,22 @@ class MainWindow(QMainWindow):
                 local_cache[key] = val
                 return val
 
-            for j in range(tile_h):
+            for j in range(render_h):
                 if cancel_event is not None and cancel_event.is_set():
                     return None
-                global_j = tile_y + j
+                global_j = tile_y + j - tile_pad
+                if global_j < 0 or global_j >= size:
+                    continue
                 if global_j < j_min or global_j > j_max:
                     continue
                 y_km = y_km_list[global_j]
                 lat_row = lat_list[global_j]
-                for i in range(tile_w):
+                for i in range(render_w):
                     if cancel_event is not None and cancel_event.is_set():
                         return None
-                    global_i = tile_x + i
+                    global_i = tile_x + i - tile_pad
+                    if global_i < 0 or global_i >= size:
+                        continue
                     if global_i < i_min or global_i > i_max:
                         continue
                     x_km = x_km_list[global_i]
@@ -2092,17 +2100,21 @@ class MainWindow(QMainWindow):
                     delta_eirp = delta_eirp_for(dist_km, diff_loss, env_loss)
                     if delta_eirp >= 5.0:
                         pixels[i, j] = (0, 200, 83, 160)
-                        tile_has = True
+                        tile_has_samples = True
                     elif delta_eirp >= 0.0:
                         pixels[i, j] = (255, 208, 0, 160)
-                        tile_has = True
+                        tile_has_samples = True
                     elif delta_eirp >= -5.0:
                         pixels[i, j] = (255, 23, 68, 160)
-                        tile_has = True
-            if not tile_has:
+                        tile_has_samples = True
+            if not tile_has_samples:
                 return None
             if ImageFilter is not None:
-                image = image.filter(ImageFilter.GaussianBlur(radius=0.6))
+                image = image.filter(ImageFilter.GaussianBlur(radius=1.0))
+            if tile_pad > 0:
+                image = image.crop((tile_pad, tile_pad, tile_pad + tile_w, tile_pad + tile_h))
+            if image.getbbox() is None:
+                return None
             buffer = io.BytesIO()
             image.save(buffer, format="PNG")
             data_url = "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")

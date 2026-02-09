@@ -204,9 +204,9 @@ class MapView(QWebEngineView):
             QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True
         )
         profile = self.page().profile()
-        profile.setHttpCacheMaximumSize(256 * 1024 * 1024)
+        profile.setHttpCacheMaximumSize(128 * 1024 * 1024)
         try:
-            profile.setHttpCacheType(QWebEngineProfile.HttpCacheType.MemoryHttpCache)
+            profile.setHttpCacheType(QWebEngineProfile.HttpCacheType.DiskHttpCache)
         except Exception:
             pass
 
@@ -294,6 +294,9 @@ class MapView(QWebEngineView):
 
     def set_coverage_visible(self, enabled: bool) -> None:
         self.page().runJavaScript(f"setCoverageVisible({str(enabled).lower()});")
+
+    def clear_coverages(self) -> None:
+        self.page().runJavaScript("clearCoverages();")
 
     def clear_all(self) -> None:
         self.page().runJavaScript("clearAll();")

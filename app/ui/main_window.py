@@ -1,16 +1,18 @@
 from __future__ import annotations
 
+from collections import OrderedDict
 from datetime import datetime
 import base64
 import io
 import os
 import sys
+from time import monotonic
 from pathlib import Path
 from dataclasses import replace
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from math import asin, atan2, ceil, cos, degrees, floor, log10, radians, sin, sqrt
 from uuid import uuid4
-from threading import Lock
+from threading import Event
 
 from PySide6.QtCore import QPoint, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
@@ -47,7 +49,6 @@ from app.ui.frequency_calculator import FrequencyCalculatorDialog
 from app.ui.map_view import MapView
 from app.ui.project_tree import ProjectTree
 from app.ui.site_dialog import SiteDevicesDialog
-from app.ui.monitoring_panel import MonitoringPanel
 
 try:
     from PIL import Image, ImageFilter
@@ -60,10 +61,12 @@ class MainWindow(QMainWindow):
     prefetch_finished = Signal(int)
     coverage_result_ready = Signal(str, int, object)
     coverage_tile_ready = Signal(str, int, object)
+    coverage_job_finished = Signal(str, int)
 
     def __init__(self, project: NetworkProject, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._project = project
+        self._cleanup_done = False
 
         self.setWindowTitle("NetPlanner 2.0")
         self.resize(1280, 720)
@@ -118,14 +121,30 @@ class MainWindow(QMainWindow):
         self._prefetch_token = 0
         self._coverage_job_seq = 0
         self._coverage_job_for_key: dict[str, int] = {}
+        self._coverage_cancel_event_for_key: dict[str, Event] = {}
+        self._coverage_active_job: tuple[str, int] | None = None
+        self._coverage_pending_jobs: OrderedDict[str, tuple] = OrderedDict()
+        self._coverage_tile_batches: OrderedDict[str, tuple[int, list[dict]]] = OrderedDict()
+        self._pending_coverage_site_ids: set[str] = set()
         self._busy_count = 0
         self.prefetch_finished.connect(self._finish_prefetch)
         self.coverage_result_ready.connect(self._apply_coverage_result)
         self.coverage_tile_ready.connect(self._apply_coverage_tile)
+        self.coverage_job_finished.connect(self._on_coverage_job_finished)
         self._prefetch_timer = QTimer(self)
         self._prefetch_timer.setSingleShot(True)
         self._prefetch_timer.timeout.connect(self._prefetch_elevation_for_view)
+        self._coverage_refresh_timer = QTimer(self)
+        self._coverage_refresh_timer.setSingleShot(True)
+        self._coverage_refresh_timer.timeout.connect(self._flush_site_coverage_updates)
+        self._coverage_tile_flush_timer = QTimer(self)
+        self._coverage_tile_flush_timer.setSingleShot(True)
+        self._coverage_tile_flush_timer.timeout.connect(self._flush_coverage_tiles)
         self._memory_limit_mb = 2048
+        self._memory_resume_mb = max(1024, self._memory_limit_mb - 256)
+        self._memory_relief_last_ts = 0.0
+        self._memory_relief_cooldown_s = 45.0
+        self._coverage_auto_paused = False
         self._memory_guard_timer = QTimer(self)
         self._memory_guard_timer.setInterval(20000)
         self._memory_guard_timer.timeout.connect(self._enforce_memory_limit)
@@ -158,7 +177,6 @@ class MainWindow(QMainWindow):
         self._init_menu_bar()
         self._apply_styles()
         self._site_counter = 1
-        self.destroyed.connect(self._cleanup_on_close)
         self._pending_link_site_id: str | None = None
         self._height_mode = False
         self._height_timer = QTimer(self)
@@ -243,7 +261,18 @@ class MainWindow(QMainWindow):
             self._schedule_elevation_prefetch()
 
     def _toggle_coverage_layer(self, enabled: bool) -> None:
+        if not enabled:
+            self._coverage_refresh_timer.stop()
+            self._pending_coverage_site_ids.clear()
+            self._cancel_all_coverage_jobs(clear_assignments=True)
+            self.map_view.clear_coverages()
+            self.map_view.set_coverage_visible(False)
+            return
+        self._coverage_auto_paused = False
         self.map_view.set_coverage_visible(enabled)
+        for site_id in self._project.sites:
+            self._request_site_coverage_update(site_id)
+        self._coverage_refresh_timer.start(120)
 
     def _toggle_height_mode(self, enabled: bool) -> None:
         self._height_mode = enabled
@@ -455,7 +484,7 @@ class MainWindow(QMainWindow):
                         b.location.lat,
                         b.location.lon,
                     )
-        self._update_site_coverages(site)
+        self._request_site_coverage_update(site.id)
         if self.project_tree.currentItem() is not None:
             current_id = self.project_tree.currentItem().data(0, Qt.ItemDataRole.UserRole)
             if current_id == site_id:
@@ -499,7 +528,6 @@ class MainWindow(QMainWindow):
         if ok and new_name.strip():
             site.name = new_name.strip()
             self.map_view.update_marker_label(site.id, site.name, self._site_kind_label(self._site_kind_value(site)))
-            self._update_site_coverages(site)
             self.project_tree.set_project(self._project)
             self._dirty = True
 
@@ -723,7 +751,6 @@ class MainWindow(QMainWindow):
             elevation = self._elevation.get_elevation(site.location.lat, site.location.lon)
             self.inspector.set_site_elevation(elevation, self._elevation.available)
             self.map_view.focus_marker(site.id)
-            self._update_site_coverages(site)
 
     def _on_tree_item_double_clicked(self, item: QTreeWidgetItem, column: int) -> None:
         if item is None:
@@ -748,6 +775,27 @@ class MainWindow(QMainWindow):
 
     def _schedule_elevation_prefetch(self) -> None:
         self._prefetch_timer.start(400)
+
+    def _request_site_coverage_update(self, site_id: str) -> None:
+        if not site_id or site_id not in self._project.sites:
+            return
+        if not self._coverage_action.isChecked():
+            return
+        self._pending_coverage_site_ids.add(site_id)
+        self._coverage_refresh_timer.start(180)
+
+    def _flush_site_coverage_updates(self) -> None:
+        if not self._coverage_action.isChecked():
+            self._pending_coverage_site_ids.clear()
+            return
+        if not self._pending_coverage_site_ids:
+            return
+        site_ids = list(self._pending_coverage_site_ids)
+        self._pending_coverage_site_ids.clear()
+        for site_id in site_ids:
+            site = self._project.sites.get(site_id)
+            if site is not None:
+                self._update_site_coverages(site)
 
     def _prefetch_elevation_for_view(self) -> None:
         if self._pending_bounds is None or self._pending_zoom is None:
@@ -842,7 +890,8 @@ class MainWindow(QMainWindow):
         for antenna in site.antennas:
             coverage_id = self._coverage_key(site_id, antenna.id)
             self.map_view.remove_coverage(coverage_id)
-            self._coverage_job_for_key.pop(coverage_id, None)
+            self._cancel_coverage_job(coverage_id, clear_assignment=True)
+        self._pending_coverage_site_ids.discard(site_id)
         self.map_view.remove_marker(site_id)
         self.project_tree.set_project(self._project)
         self.inspector.show_site(None)
@@ -939,7 +988,7 @@ class MainWindow(QMainWindow):
                 antenna = AntennaParams(id=antenna_id)
                 site.antennas.append(antenna)
             update_antenna(antenna, antenna_payload)
-            if data.get("apply"):
+            if data.get("apply") and self._coverage_action.isChecked():
                 antenna.applied = True
                 self._update_antenna_coverage(site, antenna)
 
@@ -957,9 +1006,10 @@ class MainWindow(QMainWindow):
             site.antennas = new_antennas
             new_ids = {a.id for a in site.antennas}
             for removed_id in old_ids - new_ids:
-                self.map_view.remove_coverage(self._coverage_key(site.id, removed_id))
-                self._coverage_job_for_key.pop(self._coverage_key(site.id, removed_id), None)
-            if data.get("apply_all"):
+                coverage_id = self._coverage_key(site.id, removed_id)
+                self.map_view.remove_coverage(coverage_id)
+                self._cancel_coverage_job(coverage_id, clear_assignment=True)
+            if data.get("apply_all") and self._coverage_action.isChecked():
                 for antenna in site.antennas:
                     antenna.applied = True
                     self._update_antenna_coverage(site, antenna)
@@ -968,7 +1018,7 @@ class MainWindow(QMainWindow):
         self.map_view.move_marker(site.id, site.location.lat, site.location.lon)
         self.inspector.show_site(site)
         if location_changed or env_changed:
-            self._update_site_coverages(site)
+            self._request_site_coverage_update(site.id)
         for link in self._project.links.values():
             if link.site_a_id == site.id or link.site_b_id == site.id:
                 site_a = self._project.sites.get(link.site_a_id)
@@ -1088,12 +1138,13 @@ class MainWindow(QMainWindow):
             else:
                 coverage_id = self._coverage_key(site.id, antenna.id)
                 self.map_view.remove_coverage(coverage_id)
-                self._coverage_job_for_key.pop(coverage_id, None)
+                self._cancel_coverage_job(coverage_id, clear_assignment=True)
 
     def _update_antenna_coverage(self, site: Site, antenna: AntennaParams) -> None:
         coverage_id = self._coverage_key(site.id, antenna.id)
         if antenna.beamwidth_deg is None or antenna.gain_dbi is None:
             self.map_view.remove_coverage(coverage_id)
+            self._cancel_coverage_job(coverage_id, clear_assignment=True)
             return
         beamwidth = antenna.beamwidth_deg
         azimuth = (antenna.azimuth_deg or 0.0) % 360.0
@@ -1101,6 +1152,7 @@ class MainWindow(QMainWindow):
             beamwidth = 360.0
         if beamwidth is None:
             self.map_view.remove_coverage(coverage_id)
+            self._cancel_coverage_job(coverage_id, clear_assignment=True)
             return
         beamwidth = self._clamp_beamwidth(beamwidth)
         site_snapshot = Site(
@@ -1118,7 +1170,63 @@ class MainWindow(QMainWindow):
         self._coverage_job_seq += 1
         job_id = self._coverage_job_seq
         self._coverage_job_for_key[coverage_id] = job_id
+        self._cancel_coverage_job(coverage_id, clear_assignment=False)
+        cancel_event = Event()
+        self._coverage_cancel_event_for_key[coverage_id] = cancel_event
         self.map_view.remove_coverage(coverage_id)
+        self._schedule_coverage_job(
+            site_snapshot,
+            antenna_snapshot,
+            azimuth,
+            beamwidth,
+            coverage_id,
+            job_id,
+            cancel_event,
+        )
+
+    def _schedule_coverage_job(
+        self,
+        site_snapshot: Site,
+        antenna_snapshot: AntennaParams,
+        azimuth: float,
+        beamwidth: float,
+        coverage_id: str,
+        job_id: int,
+        cancel_event: Event,
+    ) -> None:
+        job = (
+            site_snapshot,
+            antenna_snapshot,
+            azimuth,
+            beamwidth,
+            coverage_id,
+            job_id,
+            cancel_event,
+        )
+        if self._coverage_active_job is None:
+            self._start_coverage_job(job)
+            return
+        previous_pending = self._coverage_pending_jobs.pop(coverage_id, None)
+        if previous_pending is not None:
+            previous_pending_event = previous_pending[6]
+            previous_pending_event.set()
+        self._coverage_pending_jobs[coverage_id] = job
+
+    def _start_coverage_job(self, job: tuple) -> bool:
+        (
+            site_snapshot,
+            antenna_snapshot,
+            azimuth,
+            beamwidth,
+            coverage_id,
+            job_id,
+            cancel_event,
+        ) = job
+        if cancel_event.is_set():
+            return False
+        if self._coverage_job_for_key.get(coverage_id) != job_id:
+            return False
+        self._coverage_active_job = (coverage_id, job_id)
         self._set_busy("Розрахунок покриття…")
         future = self._bg_executor.submit(
             self._compute_coverage_data,
@@ -1128,13 +1236,55 @@ class MainWindow(QMainWindow):
             beamwidth,
             coverage_id,
             job_id,
+            cancel_event,
         )
         future.add_done_callback(lambda f, key=coverage_id, jid=job_id: self._on_coverage_done(key, jid, f))
+        return True
+
+    def _cancel_coverage_job(self, coverage_id: str, clear_assignment: bool) -> None:
+        cancel_event = self._coverage_cancel_event_for_key.pop(coverage_id, None)
+        if cancel_event is not None:
+            cancel_event.set()
+        pending_job = self._coverage_pending_jobs.pop(coverage_id, None)
+        if pending_job is not None:
+            pending_event = pending_job[6]
+            pending_event.set()
+        self._drop_coverage_tile_queue(coverage_id)
+        if clear_assignment:
+            self._coverage_job_for_key.pop(coverage_id, None)
+
+    def _cancel_all_coverage_jobs(self, clear_assignments: bool) -> None:
+        for pending_job in self._coverage_pending_jobs.values():
+            pending_job[6].set()
+        self._coverage_pending_jobs.clear()
+        for cancel_event in self._coverage_cancel_event_for_key.values():
+            cancel_event.set()
+        self._coverage_cancel_event_for_key.clear()
+        self._clear_coverage_tile_queues()
+        self._coverage_active_job = None
+        if clear_assignments:
+            self._coverage_job_for_key.clear()
 
     def _cleanup_on_close(self) -> None:
+        if self._cleanup_done:
+            return
+        self._cleanup_done = True
+        self._cancel_all_coverage_jobs(clear_assignments=True)
+        self._prefetch_timer.stop()
+        self._coverage_refresh_timer.stop()
+        self._coverage_tile_flush_timer.stop()
+        self._pending_coverage_site_ids.clear()
+        self._memory_guard_timer.stop()
+        self._monitor_timer.stop()
+        self._height_timer.stop()
+        self._autosave_timer.stop()
+        self._ping_checker.stop(shutdown_executor=True)
         if self._dirty:
             self._autosave()
-        self._bg_executor.shutdown(wait=False)
+        try:
+            self._bg_executor.shutdown(wait=False, cancel_futures=True)
+        except TypeError:
+            self._bg_executor.shutdown(wait=False)
         self._elevation.clear_cache()
 
     def _new_project(self) -> None:
@@ -1143,7 +1293,8 @@ class MainWindow(QMainWindow):
         self._project = NetworkProject(id="default", name="Новий проєкт")
         self._project_path = None
         self._dirty = False
-        self._coverage_job_for_key.clear()
+        self._cancel_all_coverage_jobs(clear_assignments=True)
+        self._pending_coverage_site_ids.clear()
         self.project_tree.set_project(self._project)
         self.map_view.clear_all()
         self.inspector.show_site(None)
@@ -1157,7 +1308,8 @@ class MainWindow(QMainWindow):
         self._project = load_project(path)
         self._project_path = path
         self._dirty = False
-        self._coverage_job_for_key.clear()
+        self._cancel_all_coverage_jobs(clear_assignments=True)
+        self._pending_coverage_site_ids.clear()
         self.project_tree.set_project(self._project)
         self.map_view.clear_all()
         for site in self._project.sites.values():
@@ -1168,7 +1320,8 @@ class MainWindow(QMainWindow):
                 site.location.lat,
                 site.location.lon,
             )
-            self._update_site_coverages(site)
+            self._request_site_coverage_update(site.id)
+        self._flush_site_coverage_updates()
         for link in self._project.links.values():
             site_a = self._project.sites.get(link.site_a_id)
             site_b = self._project.sites.get(link.site_b_id)
@@ -1271,7 +1424,6 @@ class MainWindow(QMainWindow):
                     self.map_view.update_marker_label(
                         site.id, site.name, self._site_kind_label(self._site_kind_value(site))
                     )
-                    self._update_site_coverages(site)
 
         self.project_tree.set_project(self._project)
         self._dirty = True
@@ -1406,10 +1558,29 @@ class MainWindow(QMainWindow):
 
     def _enforce_memory_limit(self) -> None:
         rss_mb = self._get_rss_mb()
-        if rss_mb is None or rss_mb < self._memory_limit_mb:
+        if rss_mb is None:
             return
+        if rss_mb < self._memory_resume_mb:
+            self._coverage_auto_paused = False
+            return
+        if rss_mb < self._memory_limit_mb:
+            return
+        now = monotonic()
+        if now - self._memory_relief_last_ts < self._memory_relief_cooldown_s:
+            return
+        self._memory_relief_last_ts = now
         self._elevation.clear_cache()
         self.map_view.clear_web_cache()
+        self._cancel_all_coverage_jobs(clear_assignments=True)
+        self.map_view.clear_coverages()
+        if self._coverage_action.isChecked():
+            self._coverage_auto_paused = True
+            self._coverage_action.setChecked(False)
+        elif self._coverage_auto_paused:
+            self.statusBar().showMessage(
+                f"Памʼять {rss_mb:.0f} МБ: покриття призупинено. Увімкніть шар вручну після стабілізації.",
+                5000,
+            )
 
     def _set_busy(self, message: str | None) -> None:
         if message:
@@ -1439,7 +1610,10 @@ class MainWindow(QMainWindow):
         beamwidth: float,
         coverage_id: str | None = None,
         job_id: int | None = None,
+        cancel_event: Event | None = None,
     ) -> dict | None:
+        if cancel_event is not None and cancel_event.is_set():
+            return None
         site_elevation = None
         if self._elevation.available:
             site_elevation = self._elevation.get_elevation(site.location.lat, site.location.lon)
@@ -1475,12 +1649,15 @@ class MainWindow(QMainWindow):
             tile_size=64,
             env_type=env_type,
             on_tile=tile_callback,
+            cancel_event=cancel_event,
         )
         if raster_ok:
             return {
                 "mode": "raster_done",
                 "tooltip": tooltip,
             }
+        if cancel_event is not None and cancel_event.is_set():
+            return None
         bands = self._coverage_gradient_bands(
             site,
             antenna_eff,
@@ -1489,6 +1666,7 @@ class MainWindow(QMainWindow):
             range_km,
             site_elevation,
             horizon_limit_km=horizon_limit_km,
+            cancel_event=cancel_event,
         )
         if bands:
             return {
@@ -1496,7 +1674,15 @@ class MainWindow(QMainWindow):
                 "bands": bands,
                 "tooltip": tooltip,
             }
-        points = self._coverage_points_with_dem(site, antenna_eff, azimuth, beamwidth, range_km, site_elevation)
+        points = self._coverage_points_with_dem(
+            site,
+            antenna_eff,
+            azimuth,
+            beamwidth,
+            range_km,
+            site_elevation,
+            cancel_event=cancel_event,
+        )
         if points:
             return {
                 "mode": "points",
@@ -1521,6 +1707,15 @@ class MainWindow(QMainWindow):
         except Exception:
             result = None
         self.coverage_result_ready.emit(coverage_id, job_id, result)
+        self.coverage_job_finished.emit(coverage_id, job_id)
+
+    def _on_coverage_job_finished(self, coverage_id: str, job_id: int) -> None:
+        if self._coverage_active_job == (coverage_id, job_id):
+            self._coverage_active_job = None
+        while self._coverage_pending_jobs:
+            _, pending = self._coverage_pending_jobs.popitem(last=False)
+            if self._start_coverage_job(pending):
+                break
 
     def _apply_coverage_result(self, coverage_id: str, job_id: int, result) -> None:
         if self._coverage_job_for_key.get(coverage_id) != job_id:
@@ -1534,18 +1729,22 @@ class MainWindow(QMainWindow):
             return
         antenna = next((a for a in site.antennas if a.id == antenna_id and a.applied), None)
         if antenna is None:
+            self._drop_coverage_tile_queue(coverage_id)
             self.map_view.remove_coverage(coverage_id)
             self._set_busy(None)
             return
         if result is None:
+            self._drop_coverage_tile_queue(coverage_id)
             self.map_view.remove_coverage(coverage_id)
             self._set_busy(None)
             return
         mode = result.get("mode")
         if mode == "raster_done":
+            self._flush_coverage_tiles(force_coverage_id=coverage_id)
             self._set_busy(None)
             return
-        elif mode == "bands":
+        self._drop_coverage_tile_queue(coverage_id)
+        if mode == "bands":
             self.map_view.update_coverage_bands(coverage_id, result["bands"], result["tooltip"])
         elif mode == "points":
             self.map_view.update_coverage_points(coverage_id, result["points"], result["color"], result["tooltip"])
@@ -1567,7 +1766,58 @@ class MainWindow(QMainWindow):
             return
         if not tile:
             return
-        self.map_view.update_coverage_raster_tile(coverage_id, tile["data_url"], tile["bounds"])
+        batch = self._coverage_tile_batches.get(coverage_id)
+        if batch is None or batch[0] != job_id:
+            batch = (job_id, [])
+            self._coverage_tile_batches[coverage_id] = batch
+        batch[1].append(tile)
+        self._coverage_tile_batches.move_to_end(coverage_id)
+        if not self._coverage_tile_flush_timer.isActive():
+            self._coverage_tile_flush_timer.start(25)
+
+    def _drop_coverage_tile_queue(self, coverage_id: str) -> None:
+        self._coverage_tile_batches.pop(coverage_id, None)
+
+    def _clear_coverage_tile_queues(self) -> None:
+        self._coverage_tile_batches.clear()
+        self._coverage_tile_flush_timer.stop()
+
+    def _flush_coverage_tiles(self, force_coverage_id: str | None = None) -> None:
+        if not self._coverage_tile_batches:
+            return
+        max_tiles_per_flush = 64
+        max_tiles_per_coverage = 16
+        max_tiles_force = 96
+        sent = 0
+        if force_coverage_id is not None:
+            coverage_ids = [force_coverage_id]
+        else:
+            coverage_ids = list(self._coverage_tile_batches.keys())
+        for coverage_id in coverage_ids:
+            batch = self._coverage_tile_batches.get(coverage_id)
+            if batch is None:
+                continue
+            job_id, tiles = batch
+            if self._coverage_job_for_key.get(coverage_id) != job_id:
+                self._coverage_tile_batches.pop(coverage_id, None)
+                continue
+            if not tiles:
+                self._coverage_tile_batches.pop(coverage_id, None)
+                continue
+            if force_coverage_id is None:
+                chunk_size = min(len(tiles), max_tiles_per_coverage)
+            else:
+                chunk_size = min(len(tiles), max_tiles_force)
+            chunk = tiles[:chunk_size]
+            del tiles[:chunk_size]
+            self.map_view.update_coverage_raster_tiles(coverage_id, chunk)
+            sent += chunk_size
+            if not tiles:
+                self._coverage_tile_batches.pop(coverage_id, None)
+            if force_coverage_id is None and sent >= max_tiles_per_flush:
+                break
+        if self._coverage_tile_batches:
+            self._coverage_tile_flush_timer.start(10 if force_coverage_id is not None else 25)
 
     def _coverage_points_with_dem(
         self,
@@ -1577,6 +1827,7 @@ class MainWindow(QMainWindow):
         beamwidth: float,
         range_km: float,
         site_elevation: float | None = None,
+        cancel_event: Event | None = None,
     ) -> list | None:
         distances = self._coverage_los_distances(
             site,
@@ -1587,6 +1838,7 @@ class MainWindow(QMainWindow):
             site_elevation,
             allowed_diffraction_db=6.0,
             use_fresnel=True,
+            cancel_event=cancel_event,
         )
         if not distances:
             return None
@@ -1605,7 +1857,10 @@ class MainWindow(QMainWindow):
         tile_size: int = 64,
         env_type: str = "mixed",
         on_tile=None,
+        cancel_event: Event | None = None,
     ) -> bool:
+        if cancel_event is not None and cancel_event.is_set():
+            return False
         if Image is None:
             return False
         if not self._elevation.available:
@@ -1654,19 +1909,21 @@ class MainWindow(QMainWindow):
 
         half_bw = beamwidth / 2.0
         use_bw = beamwidth < 360.0 - 1e-3
+        heading_x = sin(radians(azimuth))
+        heading_y = cos(radians(azimuth))
+        cos_half_bw = cos(radians(half_bw))
         earth_radius_m = 6371000.0 * 1.1
         wavelength_m = 0.3 / freq_ghz
         fresnel_factor = 0.6
         base_fspl = 92.45 + (20.0 * log10(freq_ghz))
-        max_workers = min(4, os.cpu_count() or 4)
-        cache_lock = Lock()
-        elev_cache: dict[tuple[float, float], float | None] = {}
+        elev_cache: OrderedDict[tuple[float, float], float | None] = OrderedDict()
         cache_limit = 20000
 
         x_km_list = [(i - center) * step_km for i in range(size)]
         y_km_list = [(center - j) * step_km for j in range(size)]
         lat_list = [lat + (y_km * lat_per_km) for y_km in y_km_list]
         lon_list = [lon + (x_km * lon_per_km) for x_km in x_km_list]
+        effective_range_sq = effective_range_km * effective_range_km
 
         def delta_eirp_for(distance_km: float, diff_loss_db: float, env_loss_db: float) -> float:
             fspl = base_fspl + (20.0 * log10(distance_km))
@@ -1729,12 +1986,12 @@ class MainWindow(QMainWindow):
         def elevation_cached(lat_q: float, lon_q: float) -> float | None:
             key = (round(lat_q, 4), round(lon_q, 4))
             if key in elev_cache:
+                elev_cache.move_to_end(key)
                 return elev_cache[key]
             elev_val = self._elevation.get_elevation(lat_q, lon_q)
-            with cache_lock:
-                if len(elev_cache) >= cache_limit:
-                    elev_cache.clear()
-                elev_cache[key] = elev_val
+            elev_cache[key] = elev_val
+            if len(elev_cache) > cache_limit:
+                elev_cache.popitem(last=False)
             return elev_val
 
         any_tiles = False
@@ -1752,6 +2009,7 @@ class MainWindow(QMainWindow):
                     return local_cache[key]
                 if key in elev_cache:
                     val = elev_cache[key]
+                    elev_cache.move_to_end(key)
                     local_cache[key] = val
                     return val
                 val = elevation_cached(lat_q, lon_q)
@@ -1759,23 +2017,27 @@ class MainWindow(QMainWindow):
                 return val
 
             for j in range(tile_h):
+                if cancel_event is not None and cancel_event.is_set():
+                    return None
                 global_j = tile_y + j
                 if global_j < j_min or global_j > j_max:
                     continue
                 y_km = y_km_list[global_j]
                 lat_row = lat_list[global_j]
                 for i in range(tile_w):
+                    if cancel_event is not None and cancel_event.is_set():
+                        return None
                     global_i = tile_x + i
                     if global_i < i_min or global_i > i_max:
                         continue
                     x_km = x_km_list[global_i]
-                    dist_km = sqrt(x_km * x_km + y_km * y_km)
-                    if dist_km <= 0 or dist_km > effective_range_km:
+                    dist_sq = (x_km * x_km) + (y_km * y_km)
+                    if dist_sq <= 0 or dist_sq > effective_range_sq:
                         continue
-                    bearing = (degrees(atan2(x_km, y_km)) + 360.0) % 360.0
+                    dist_km = sqrt(dist_sq)
                     if use_bw:
-                        delta = (bearing - azimuth + 540.0) % 360.0 - 180.0
-                        if abs(delta) > half_bw:
+                        along_beam = (x_km * heading_x) + (y_km * heading_y)
+                        if along_beam < (dist_km * cos_half_bw):
                             continue
                     lon_col = lon_list[global_i]
                     target_elev = elev_local(lat_row, lon_col)
@@ -1789,7 +2051,11 @@ class MainWindow(QMainWindow):
                     diff_loss = 0.0
                     blocked = False
                     step_path_km = adaptive_step(dist_km)
-                    for d_km in self._frange(step_path_km, dist_km, step_path_km):
+                    path_steps = int(dist_km / step_path_km)
+                    for step_idx in range(1, path_steps + 1):
+                        if cancel_event is not None and cancel_event.is_set():
+                            return None
+                        d_km = step_idx * step_path_km
                         if d_km >= dist_km:
                             break
                         frac = d_km / dist_km
@@ -1859,18 +2125,15 @@ class MainWindow(QMainWindow):
         if not tiles:
             return False
 
-        with ThreadPoolExecutor(max_workers=min(max_workers, len(tiles))) as tile_pool:
-            futures = [
-                tile_pool.submit(compute_tile, tile_x, tile_y, tile_w, tile_h)
-                for tile_x, tile_y, tile_w, tile_h in tiles
-            ]
-            for future in as_completed(futures):
-                result = future.result()
-                if result is None:
-                    continue
-                any_tiles = True
-                if on_tile:
-                    on_tile(result)
+        for tile_x, tile_y, tile_w, tile_h in tiles:
+            if cancel_event is not None and cancel_event.is_set():
+                return False
+            result = compute_tile(tile_x, tile_y, tile_w, tile_h)
+            if result is None:
+                continue
+            any_tiles = True
+            if on_tile:
+                on_tile(result)
         return any_tiles
 
     def _coverage_gradient_bands(
@@ -1882,7 +2145,10 @@ class MainWindow(QMainWindow):
         range_km: float,
         site_elevation: float | None = None,
         horizon_limit_km: float | None = None,
+        cancel_event: Event | None = None,
     ) -> list | None:
+        if cancel_event is not None and cancel_event.is_set():
+            return None
         freq_ghz = antenna.frequency_ghz
         if freq_ghz is None or freq_ghz <= 0:
             return None
@@ -1929,8 +2195,11 @@ class MainWindow(QMainWindow):
             site_elevation,
             allowed_diffraction_db=12.0,
             use_fresnel=False,
+            cancel_event=cancel_event,
         )
         if not distances_red:
+            return None
+        if cancel_event is not None and cancel_event.is_set():
             return None
         distances_yellow = self._coverage_los_distances(
             site,
@@ -1941,9 +2210,12 @@ class MainWindow(QMainWindow):
             site_elevation,
             allowed_diffraction_db=6.0,
             use_fresnel=False,
+            cancel_event=cancel_event,
         )
         if not distances_yellow:
             distances_yellow = distances_red
+        if cancel_event is not None and cancel_event.is_set():
+            return None
         distances_green = self._coverage_los_distances(
             site,
             antenna,
@@ -1953,6 +2225,7 @@ class MainWindow(QMainWindow):
             site_elevation,
             allowed_diffraction_db=0.0,
             use_fresnel=True,
+            cancel_event=cancel_event,
         )
         if not distances_green:
             distances_green = distances_yellow
@@ -1996,7 +2269,10 @@ class MainWindow(QMainWindow):
         allowed_diffraction_db: float = 0.0,
         use_fresnel: bool = True,
         obstruction_grace_m: float = 20.0,
+        cancel_event: Event | None = None,
     ) -> list[tuple[int, float]] | None:
+        if cancel_event is not None and cancel_event.is_set():
+            return None
         if not self._elevation.available:
             return None
         elevation = site_elevation
@@ -2014,31 +2290,42 @@ class MainWindow(QMainWindow):
         wavelength_m = 0.3 / freq_ghz if freq_valid else None
         earth_radius_m = 6371000.0 * 1.1
         step_km = max(0.2, range_km / 12)
+        sample_distances = []
+        dist_cursor = step_km
+        while dist_cursor <= range_km:
+            sample_distances.append(dist_cursor)
+            dist_cursor += step_km
         distances: list[tuple[int, float]] = []
         start = azimuth - beamwidth / 2
         end = azimuth + beamwidth / 2
+        angle_step = max(2, int(beamwidth / 20))
         prev_dist_km: float | None = None
         max_jump_km = max(0.5, range_km / 30)
-        for angle in range(int(start), int(end) + 1, max(2, int(beamwidth / 20))):
-            samples: list[tuple[float, float | None, float, float]] = []
-            for dist in self._frange(step_km, range_km, step_km):
+        for angle in range(int(start), int(end) + 1, angle_step):
+            if cancel_event is not None and cancel_event.is_set():
+                return None
+            samples: list[tuple[float, float | None]] = []
+            for dist in sample_distances:
+                if cancel_event is not None and cancel_event.is_set():
+                    return None
                 lat, lon = self._destination_point(site.location.lat, site.location.lon, angle, dist)
                 elev = self._elevation.get_elevation(lat, lon)
-                samples.append((dist, elev, lat, lon))
+                samples.append((dist, elev))
 
-            last_ok = None
+            last_ok_dist = 0.0
             base_stride = max(1, len(samples) // 50)
-            for idx, (dist, elev, lat, lon) in enumerate(samples):
-                if dist <= 0:
-                    last_ok = (lat, lon)
-                    continue
+            for idx, (dist, elev) in enumerate(samples):
+                if cancel_event is not None and cancel_event.is_set():
+                    return None
                 if elev is None:
                     break
                 target_height = elev + rx_height_m
                 los_ok = True
                 stride = 1 if idx < base_stride * 2 else base_stride
                 for j in range(0, idx, stride):
-                    d1, elev_j, _, _ = samples[j]
+                    if cancel_event is not None and cancel_event.is_set():
+                        return None
+                    d1, elev_j = samples[j]
                     if elev_j is None:
                         continue
                     d2 = dist - d1
@@ -2070,18 +2357,11 @@ class MainWindow(QMainWindow):
                             break
                 if not los_ok:
                     break
-                last_ok = (lat, lon)
+                last_ok_dist = dist
 
-            dist_km = 0.0
-            if last_ok is not None:
-                dist_km = self._distance_km(
-                    site.location.lat,
-                    site.location.lon,
-                    last_ok[0],
-                    last_ok[1],
-                )
-                if prev_dist_km is not None and dist_km > prev_dist_km + max_jump_km:
-                    dist_km = prev_dist_km + max_jump_km
+            dist_km = last_ok_dist
+            if prev_dist_km is not None and dist_km > prev_dist_km + max_jump_km:
+                dist_km = prev_dist_km + max_jump_km
             prev_dist_km = dist_km
             distances.append((angle, dist_km))
         return distances

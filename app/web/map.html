@@ -547,61 +547,51 @@
         coverages.set(id, [polygon]);
       }
 
+      function clearCoverageEntry(entry) {
+        if (!entry) { return; }
+        if (Array.isArray(entry)) {
+          entry.forEach((layer) => coverageLayer.removeLayer(layer));
+        } else {
+          coverageLayer.removeLayer(entry);
+        }
+      }
+
+      function clearCoverages() {
+        coverages.forEach((entry) => clearCoverageEntry(entry));
+        coverages.clear();
+      }
+
       function updateCoverage(id, lat, lon, azimuth, beamwidth, rangeKm, color, tooltip) {
-        let existing = coverages.get(id);
+        const existing = coverages.get(id);
         if (existing) {
-          if (Array.isArray(existing)) {
-            existing.forEach((poly) => coverageLayer.removeLayer(poly));
-          } else {
-            coverageLayer.removeLayer(existing);
-          }
+          clearCoverageEntry(existing);
           coverages.delete(id);
-          existing = null;
         }
-        if (!existing || existing.length !== 1) {
-          addCoverage(id, lat, lon, azimuth, beamwidth, rangeKm, color);
-          return;
+        addCoverage(id, lat, lon, azimuth, beamwidth, rangeKm, color);
+        if (tooltip) {
+          const entry = coverages.get(id);
+          if (entry && entry.length > 0) {
+            entry[0].bindTooltip(tooltip);
+          }
         }
-        const polygon = existing[0];
-        const latlngs = buildCoverageLatLngs(lat, lon, azimuth, beamwidth, rangeKm);
-        if (!latlngs) { return; }
-        polygon.setLatLngs(latlngs);
-        if (color) { polygon.setStyle({ color: color, fillColor: color }); }
-        if (tooltip) { polygon.bindTooltip(tooltip); }
       }
 
       function updateCoveragePoints(id, latlngs, color, tooltip) {
-        let existing = coverages.get(id);
+        const existing = coverages.get(id);
         if (existing) {
-          if (Array.isArray(existing)) {
-            existing.forEach((poly) => coverageLayer.removeLayer(poly));
-          } else {
-            coverageLayer.removeLayer(existing);
-          }
+          clearCoverageEntry(existing);
           coverages.delete(id);
-          existing = null;
         }
-        if (!existing || existing.length !== 1) {
-          const newPoly = L.polygon(latlngs, { color: color, fillColor: color, fillOpacity: 0.15 });
-          if (tooltip) { newPoly.bindTooltip(tooltip); }
-          newPoly.addTo(coverageLayer);
-          coverages.set(id, [newPoly]);
-          return;
-        }
-        const polygon = existing[0];
-        polygon.setLatLngs(latlngs);
-        if (color) { polygon.setStyle({ color: color, fillColor: color }); }
-        if (tooltip) { polygon.bindTooltip(tooltip); }
+        const newPoly = L.polygon(latlngs, { color: color, fillColor: color, fillOpacity: 0.15 });
+        if (tooltip) { newPoly.bindTooltip(tooltip); }
+        newPoly.addTo(coverageLayer);
+        coverages.set(id, [newPoly]);
       }
 
       function updateCoverageBands(id, bands, tooltip) {
         const existing = coverages.get(id);
         if (existing) {
-          if (Array.isArray(existing)) {
-            existing.forEach((poly) => coverageLayer.removeLayer(poly));
-          } else {
-            coverageLayer.removeLayer(existing);
-          }
+          clearCoverageEntry(existing);
         }
         const polys = [];
         bands.forEach((band) => {
@@ -636,14 +626,33 @@
         existing.push(overlay);
       }
 
+      function updateCoverageRasterTiles(id, tiles) {
+        if (!Array.isArray(tiles) || tiles.length === 0) { return; }
+        let existing = coverages.get(id);
+        if (existing && !Array.isArray(existing)) {
+          coverageLayer.removeLayer(existing);
+          existing = null;
+        }
+        if (!existing) {
+          existing = [];
+          coverages.set(id, existing);
+        }
+        tiles.forEach((tile) => {
+          if (!tile || !tile.data_url || !tile.bounds) { return; }
+          const bounds = tile.bounds;
+          const latLngBounds = Array.isArray(bounds[0])
+            ? bounds
+            : [[bounds[0], bounds[1]], [bounds[2], bounds[3]]];
+          const overlay = L.imageOverlay(tile.data_url, latLngBounds, { opacity: 1, pane: 'coveragePane' });
+          overlay.addTo(coverageLayer);
+          existing.push(overlay);
+        });
+      }
+
       function removeCoverage(id) {
         const entry = coverages.get(id);
         if (!entry) { return; }
-        if (Array.isArray(entry)) {
-          entry.forEach((polygon) => coverageLayer.removeLayer(polygon));
-        } else {
-          coverageLayer.removeLayer(entry);
-        }
+        clearCoverageEntry(entry);
         coverages.delete(id);
       }
 
@@ -786,6 +795,9 @@
       function removeLink(id) {
         const entry = links.get(id);
         if (!entry) { return; }
+        if (entry.timer) { clearTimeout(entry.timer); entry.timer = null; }
+        if (entry.popup) { map.closePopup(entry.popup); entry.popup = null; }
+        if (entry.distanceTooltip) { map.removeLayer(entry.distanceTooltip); entry.distanceTooltip = null; }
         map.removeLayer(entry.line);
         links.delete(id);
       }
@@ -997,21 +1009,15 @@
       window.updateCoveragePoints = updateCoveragePoints;
       window.updateCoverageBands = updateCoverageBands;
       window.updateCoverageRasterTile = updateCoverageRasterTile;
+      window.updateCoverageRasterTiles = updateCoverageRasterTiles;
       window.removeCoverage = removeCoverage;
       window.setCoverageVisible = setCoverageVisible;
+      window.clearCoverages = clearCoverages;
       window.clearAll = function () {
         markers.forEach((m) => map.removeLayer(m));
         markers.clear();
-        links.forEach((entry) => map.removeLayer(entry.line));
-        links.clear();
-        coverages.forEach((c) => {
-          if (Array.isArray(c)) {
-            c.forEach((layer) => coverageLayer.removeLayer(layer));
-          } else {
-            coverageLayer.removeLayer(c);
-          }
-        });
-        coverages.clear();
+        [...links.keys()].forEach((id) => removeLink(id));
+        clearCoverages();
         azimuthMeasures.forEach((entry) => entry.layers.forEach((l) => map.removeLayer(l)));
         azimuthMeasures.clear();
         resetAzimuthTemp();

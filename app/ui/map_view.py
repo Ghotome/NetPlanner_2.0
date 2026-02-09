@@ -204,9 +204,9 @@ class MapView(QWebEngineView):
             QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True
         )
         profile = self.page().profile()
-        profile.setHttpCacheMaximumSize(256 * 1024 * 1024)
+        profile.setHttpCacheMaximumSize(128 * 1024 * 1024)
         try:
-            profile.setHttpCacheType(QWebEngineProfile.HttpCacheType.MemoryHttpCache)
+            profile.setHttpCacheType(QWebEngineProfile.HttpCacheType.DiskHttpCache)
         except Exception:
             pass
 
@@ -282,6 +282,12 @@ class MapView(QWebEngineView):
             f"updateCoverageRasterTile({site_id!r}, {data_url!r}, {bounds!r});"
         )
 
+    def update_coverage_raster_tiles(self, site_id: str, tiles: list[dict]) -> None:
+        if not tiles:
+            return
+        tiles_json = json.dumps(tiles, ensure_ascii=False)
+        self.page().runJavaScript(f"updateCoverageRasterTiles({site_id!r}, {tiles_json});")
+
     def update_coverage_bands(self, site_id: str, bands: list, tooltip: str) -> None:
         bands_json = json.dumps(bands, ensure_ascii=False)
         tooltip_json = json.dumps(tooltip, ensure_ascii=False)
@@ -294,6 +300,9 @@ class MapView(QWebEngineView):
 
     def set_coverage_visible(self, enabled: bool) -> None:
         self.page().runJavaScript(f"setCoverageVisible({str(enabled).lower()});")
+
+    def clear_coverages(self) -> None:
+        self.page().runJavaScript("clearCoverages();")
 
     def clear_all(self) -> None:
         self.page().runJavaScript("clearAll();")

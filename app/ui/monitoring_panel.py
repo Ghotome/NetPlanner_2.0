@@ -4,8 +4,9 @@ from PySide6.QtWidgets import QLabel, QListWidget, QVBoxLayout, QWidget
 
 
 class MonitoringPanel(QWidget):
-    def __init__(self, parent=None) -> None:
+    def __init__(self, parent=None, max_events: int = 500) -> None:
         super().__init__(parent)
+        self._max_events = max(1, int(max_events))
         layout = QVBoxLayout(self)
         self._availability = QLabel("Доступність: —", self)
         self._problems = QListWidget(self)
@@ -25,3 +26,6 @@ class MonitoringPanel(QWidget):
 
     def add_event(self, text: str) -> None:
         self._events.addItem(text)
+        while self._events.count() > self._max_events:
+            item = self._events.takeItem(0)
+            del item

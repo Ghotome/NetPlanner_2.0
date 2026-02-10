@@ -449,6 +449,7 @@ class InspectorPanel(QWidget):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self._current_link_id: str | None = None
+        self._empty_project_mode = False
 
         self._site_group = QWidget(self)
         site_layout = QFormLayout(self._site_group)
@@ -573,8 +574,24 @@ class InspectorPanel(QWidget):
         content = QWidget(self)
         content_layout = QVBoxLayout(content)
         content_layout.setContentsMargins(0, 0, 0, 0)
+        self._empty_state_label = QLabel(
+            "Створіть перший сайт для початку роботи або завантажте проєкт",
+            self,
+        )
+        self._empty_state_label.setWordWrap(True)
+        self._empty_state_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._empty_state_label.setStyleSheet(
+            "QLabel {"
+            "background: rgba(15, 23, 32, 220);"
+            "color: white;"
+            "border-radius: 10px;"
+            "padding: 16px;"
+            "font-weight: 600;"
+            "}"
+        )
         content_layout.addWidget(self._site_group)
         content_layout.addWidget(self._link_group)
+        content_layout.addWidget(self._empty_state_label)
         content_layout.addStretch(1)
 
         scroll = QScrollArea(self)
@@ -584,7 +601,19 @@ class InspectorPanel(QWidget):
         layout = QVBoxLayout(self)
         layout.addWidget(scroll)
         self._link_group.setVisible(False)
+        self._empty_state_label.setVisible(False)
         self._current_site_id: str | None = None
+
+    def set_empty_project_mode(self, enabled: bool) -> None:
+        self._empty_project_mode = enabled
+        if enabled:
+            self._current_site_id = None
+            self._current_link_id = None
+            self._site_group.setVisible(False)
+            self._link_group.setVisible(False)
+            self._empty_state_label.setVisible(True)
+            return
+        self._empty_state_label.setVisible(False)
 
     def _set_link_editable(self, editable: bool) -> None:
         for field in (
@@ -612,12 +641,14 @@ class InspectorPanel(QWidget):
             self._clear_antenna_blocks()
             self._add_antenna_btn.setEnabled(False)
             self._apply_all_antennas_btn.setEnabled(False)
-            self._site_group.setVisible(True)
+            self._site_group.setVisible(not self._empty_project_mode)
             self._link_group.setVisible(False)
+            self._empty_state_label.setVisible(self._empty_project_mode)
             self._current_link_id = None
             self._current_site_id = None
             return
 
+        self._empty_project_mode = False
         self._site_name.setText(site.name)
         type_idx = self._site_type.findData(site.kind)
         if type_idx >= 0:
@@ -634,6 +665,7 @@ class InspectorPanel(QWidget):
         self._update_apply_all_state()
         self._site_group.setVisible(True)
         self._link_group.setVisible(False)
+        self._empty_state_label.setVisible(False)
         self._current_link_id = None
         self._current_site_id = site.id
 
@@ -650,6 +682,7 @@ class InspectorPanel(QWidget):
         if link is None:
             self.show_site(None)
             return
+        self._empty_project_mode = False
         kind_value = link.kind.value if hasattr(link.kind, "value") else str(link.kind)
         self._current_link_id = link.id
         self._link_name.setText(link.name)
@@ -677,6 +710,7 @@ class InspectorPanel(QWidget):
         self._toggle_link_fields()
         self._site_group.setVisible(False)
         self._link_group.setVisible(True)
+        self._empty_state_label.setVisible(False)
         kind_value = link.kind.value if hasattr(link.kind, "value") else str(link.kind)
         self._analyze_btn.setVisible(kind_value in ("ptp", "ptmp"))
 

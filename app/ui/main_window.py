@@ -3,8 +3,10 @@ from __future__ import annotations
 from collections import OrderedDict
 from datetime import datetime
 import base64
+import ipaddress
 import io
 import os
+import subprocess
 import sys
 from time import monotonic
 from pathlib import Path
@@ -14,11 +16,12 @@ from math import asin, atan2, ceil, cos, degrees, floor, log10, radians, sin, sq
 from uuid import uuid4
 from threading import Event
 
-from PySide6.QtCore import QPoint, Qt, QTimer, Signal
+from PySide6.QtCore import QPoint, Qt, QTimer, Signal, QUrl
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
     QInputDialog,
+    QLabel,
     QMainWindow,
     QMenu,
     QMessageBox,
@@ -29,11 +32,12 @@ from PySide6.QtWidgets import (
     QTextEdit,
     QVBoxLayout,
     QWidget,
+    QStyle,
 )
-from PySide6.QtGui import QAction, QPalette
+from PySide6.QtGui import QAction, QDesktopServices, QKeySequence, QPalette, QShortcut
 
 from app.coverage import CoverageCalculator
-from app.domain import AntennaParams, GeoPoint, Link, LinkKind, NetworkProject, Site, SiteKind, StatusState
+from app.domain import AntennaParams, Device, DeviceLink, GeoPoint, Link, LinkKind, NetworkProject, Site, SiteKind, StatusState
 from app.elevation import ElevationProvider
 from app.link_analyzer import LinkAnalyzer, LinkProfile
 from app.project_io import load_project, save_project
@@ -48,7 +52,7 @@ from app.ui.watt_dbm_calculator import WattDbmCalculatorDialog
 from app.ui.frequency_calculator import FrequencyCalculatorDialog
 from app.ui.map_view import MapView
 from app.ui.project_tree import ProjectTree
-from app.ui.site_dialog import SiteDevicesDialog
+from app.ui.site_dialog import LinkFormDialog, SiteDevicesDialog
 
 try:
     from PIL import Image, ImageFilter
@@ -178,6 +182,8 @@ class MainWindow(QMainWindow):
         self._apply_styles()
         self._site_counter = 1
         self._pending_link_site_id: str | None = None
+        self._pending_link_device: tuple[str, str] | None = None
+        self._last_deleted_tree_device: tuple[str, Device, list[DeviceLink]] | None = None
         self._height_mode = False
         self._height_timer = QTimer(self)
         self._height_timer.setSingleShot(True)
@@ -199,6 +205,24 @@ class MainWindow(QMainWindow):
 
         self.project_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.project_tree.customContextMenuRequested.connect(self._on_tree_context_menu)
+        self._rename_tree_shortcut = QShortcut(QKeySequence("F2"), self)
+        self._rename_tree_shortcut.activated.connect(self._rename_selected)
+        self._undo_tree_shortcut = QShortcut(QKeySequence.Undo, self)
+        self._undo_tree_shortcut.activated.connect(self._undo_last_deleted_tree_device)
+        self._hint_overlay_label = QLabel("", self)
+        self._hint_overlay_label.setStyleSheet(
+            "QLabel { background: rgba(15, 23, 32, 220); color: white; "
+            "border-radius: 8px; padding: 8px 12px; font-weight: 600; }"
+        )
+        self._hint_overlay_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self._hint_overlay_label.hide()
+        self._hint_overlay_timer = QTimer(self)
+        self._hint_overlay_timer.setSingleShot(True)
+        self._hint_overlay_timer.timeout.connect(self._on_hint_overlay_timeout)
+        self._hint_overlay_persistent_text: str | None = None
+        self._busy_overlay_text: str | None = None
+        self._empty_project_overlay_text = "Створіть перший сайт для початку роботи або завантажте проєкт"
+        self._sync_empty_project_state(show_overlay=True)
 
     def closeEvent(self, event):  # noqa: N802
         if self._dirty:
@@ -217,6 +241,11 @@ class MainWindow(QMainWindow):
                 self._save_project()
         self._cleanup_on_close()
         super().closeEvent(event)
+
+    def resizeEvent(self, event):  # noqa: N802
+        super().resizeEvent(event)
+        if self._hint_overlay_label.isVisible():
+            self._position_hint_overlay()
 
     def _init_actions(self) -> None:
         self._elevation_action = QAction("Шар висот", self)
@@ -280,9 +309,9 @@ class MainWindow(QMainWindow):
         self.map_view.set_height_mode(enabled)
         if not enabled:
             QToolTip.hideText()
-            self.statusBar().clearMessage()
+            self._clear_hint_overlay()
         else:
-            self.statusBar().showMessage("Наведіть курсор на точку на мапі для заміру висоти.")
+            self._show_hint_overlay("Наведіть курсор на точку на мапі для заміру висоти.", persistent=True)
 
     def _toggle_azimuth_mode(self, enabled: bool) -> None:
         if enabled and self._height_action.isChecked():
@@ -293,14 +322,17 @@ class MainWindow(QMainWindow):
             self.map_view.set_los_mode(False)
             if self._los_action.isChecked():
                 self._los_action.setChecked(False)
-            self.statusBar().clearMessage()
+            self._clear_hint_overlay()
         if enabled and self._ruler_action.isChecked():
             self._ruler_action.setChecked(False)
         self.map_view.set_azimuth_mode(enabled)
         if enabled:
-            self.statusBar().showMessage("Натисніть ЛКМ, щоб розпочати. Натисніть ЛКМ, щоб завершити вимірювання.")
+            self._show_hint_overlay(
+                "Натисніть ЛКМ, щоб розпочати. Натисніть ЛКМ, щоб завершити вимірювання.",
+                persistent=True,
+            )
         else:
-            self.statusBar().clearMessage()
+            self._clear_hint_overlay()
 
     def _toggle_ruler_mode(self, enabled: bool) -> None:
         if enabled and self._height_action.isChecked():
@@ -311,14 +343,17 @@ class MainWindow(QMainWindow):
             self.map_view.set_los_mode(False)
             if self._los_action.isChecked():
                 self._los_action.setChecked(False)
-            self.statusBar().clearMessage()
+            self._clear_hint_overlay()
         if enabled and self._azimuth_action.isChecked():
             self._azimuth_action.setChecked(False)
         self.map_view.set_ruler_mode(enabled)
         if enabled:
-            self.statusBar().showMessage("Натисніть ЛКМ в зоні мапи, щоб додати точку виміру. Натисніть ПКМ, щоб завершити вимірювання.")
+            self._show_hint_overlay(
+                "Натисніть ЛКМ в зоні мапи, щоб додати точку виміру. Натисніть ПКМ, щоб завершити вимірювання.",
+                persistent=True,
+            )
         else:
-            self.statusBar().clearMessage()
+            self._clear_hint_overlay()
 
     def _set_height_mode_from_map(self, enabled: bool) -> None:
         self._height_action.setChecked(enabled)
@@ -337,15 +372,22 @@ class MainWindow(QMainWindow):
         menu.setNativeMenuBar(False)
         menu.clear()
         file_menu = menu.addMenu("Файл")
-        file_menu.addAction("Новий проєкт", self._new_project, "Ctrl+N")
-        file_menu.addAction("Відкрити", self._open_project, "Ctrl+O")
-        file_menu.addAction("Зберегти", self._save_project, "Ctrl+S")
-        file_menu.addAction("Зберегти як", self._save_project_as, "Ctrl+Shift+S")
+        new_project_action = file_menu.addAction("Новий проєкт", self._new_project, "Ctrl+N")
+        open_project_action = file_menu.addAction("Відкрити", self._open_project, "Ctrl+O")
+        save_project_action = file_menu.addAction("Зберегти", self._save_project, "Ctrl+S")
+        save_as_project_action = file_menu.addAction("Зберегти як", self._save_project_as, "Ctrl+Shift+S")
         file_menu.addSeparator()
-        file_menu.addAction("Вихід", self.close, "Ctrl+Q")
+        exit_action = file_menu.addAction("Вихід", self.close, "Ctrl+Q")
 
         help_menu = menu.addMenu("Довідка")
-        help_menu.addAction("Про програму", self._about)
+        about_action = help_menu.addAction("Про програму", self._about)
+
+        self._set_menu_action_icon(new_project_action, "SP_FileIcon")
+        self._set_menu_action_icon(open_project_action, "SP_DialogOpenButton")
+        self._set_menu_action_icon(save_project_action, "SP_DialogSaveButton")
+        self._set_menu_action_icon(save_as_project_action, "SP_DialogSaveButton")
+        self._set_menu_action_icon(exit_action, "SP_DialogCloseButton")
+        self._set_menu_action_icon(about_action, "SP_MessageBoxInformation")
 
     def _apply_styles(self) -> None:
         palette = QApplication.palette()
@@ -383,6 +425,84 @@ class MainWindow(QMainWindow):
             """
         )
 
+    def _position_hint_overlay(self) -> None:
+        self._hint_overlay_label.adjustSize()
+        status_bar = self.statusBar()
+        status_h = status_bar.sizeHint().height() if status_bar is not None else 0
+        x = max(12, (self.width() - self._hint_overlay_label.width()) // 2)
+        y = max(12, self.height() - self._hint_overlay_label.height() - status_h - 16)
+        self._hint_overlay_label.move(x, y)
+
+    def _show_hint_overlay(
+        self,
+        text: str,
+        duration_ms: int | None = None,
+        *,
+        persistent: bool = False,
+    ) -> None:
+        if not text:
+            return
+        if persistent:
+            self._hint_overlay_persistent_text = text
+        if self._busy_overlay_text is not None:
+            return
+        self._hint_overlay_label.setText(text)
+        self._position_hint_overlay()
+        self._hint_overlay_label.show()
+        self._hint_overlay_label.raise_()
+        if persistent:
+            self._hint_overlay_timer.stop()
+            return
+        if duration_ms is None:
+            duration_ms = 2200
+        if duration_ms > 0:
+            self._hint_overlay_timer.start(duration_ms)
+        else:
+            self._hint_overlay_timer.stop()
+
+    def _clear_hint_overlay(self, *, clear_persistent: bool = True) -> None:
+        if clear_persistent:
+            self._hint_overlay_persistent_text = None
+        self._hint_overlay_timer.stop()
+        if self._busy_overlay_text is not None:
+            return
+        self._hint_overlay_label.hide()
+
+    def _on_hint_overlay_timeout(self) -> None:
+        if self._busy_overlay_text is not None:
+            return
+        if self._hint_overlay_persistent_text:
+            self._show_hint_overlay(self._hint_overlay_persistent_text, persistent=True)
+            return
+        self._hint_overlay_label.hide()
+
+    def _sync_empty_project_state(self, *, show_overlay: bool = False) -> None:
+        empty_project = len(self._project.sites) == 0
+        self.inspector.set_empty_project_mode(empty_project)
+        if empty_project:
+            if self._hint_overlay_persistent_text == self._empty_project_overlay_text:
+                self._clear_hint_overlay()
+            return
+        if self._hint_overlay_persistent_text == self._empty_project_overlay_text:
+            self._clear_hint_overlay()
+
+    def _show_busy_overlay(self, text: str) -> None:
+        if not text:
+            return
+        self._busy_overlay_text = text
+        self._hint_overlay_timer.stop()
+        self._hint_overlay_label.setText(text)
+        self._position_hint_overlay()
+        self._hint_overlay_label.show()
+        self._hint_overlay_label.raise_()
+
+    def _clear_busy_overlay(self) -> None:
+        self._busy_overlay_text = None
+        if self._hint_overlay_persistent_text:
+            self._show_hint_overlay(self._hint_overlay_persistent_text, persistent=True)
+            return
+        self._hint_overlay_label.hide()
+
     def _about(self) -> None:
         QMessageBox.information(self, "Про програму", "NetPlaner v2.0\nBy R & Mr. GPT")
 
@@ -406,15 +526,16 @@ class MainWindow(QMainWindow):
         menu = QMenu(self)
         menu.setTitle("Створити")
 
-        actions = [
-            ("Створити CORE сайт", SiteKind.CORE),
-            ("Створити POP сайт", SiteKind.POP),
-            ("Створити CPE сайт", SiteKind.CPE),
-        ]
-
         action_map = {}
-        for label, kind in actions:
-            action_map[menu.addAction(label)] = kind
+        core_action = menu.addAction("Створити CORE сайт")
+        pop_action = menu.addAction("Створити POP сайт")
+        cpe_action = menu.addAction("Створити CPE сайт")
+        action_map[core_action] = SiteKind.CORE
+        action_map[pop_action] = SiteKind.POP
+        action_map[cpe_action] = SiteKind.CPE
+        self._set_menu_action_icon(core_action, "SP_ComputerIcon")
+        self._set_menu_action_icon(pop_action, "SP_DriveNetIcon")
+        self._set_menu_action_icon(cpe_action, "SP_DesktopIcon")
 
         chosen = menu.exec(self.map_view.mapToGlobal(QPoint(x, y)))
         if chosen is None:
@@ -443,6 +564,7 @@ class MainWindow(QMainWindow):
         site_kind_value = self._site_kind_value(site)
         self.project_tree.add_node(site.id, f"{site.name} ({site_kind_value})")
         self.map_view.add_marker(site.id, site.name, self._site_kind_label(site_kind_value), lat, lon)
+        self._sync_empty_project_state(show_overlay=False)
         self.inspector.show_site(site)
         self._dirty = True
         self._ping_checker.set_devices(self._all_devices())
@@ -499,7 +621,7 @@ class MainWindow(QMainWindow):
         if self._pending_link_site_id and self._pending_link_site_id != site_id:
             start_id = self._pending_link_site_id
             self._pending_link_site_id = None
-            self.statusBar().clearMessage()
+            self._clear_hint_overlay()
             self._on_map_request_site_link(start_id, site_id)
         if site is None:
             return
@@ -573,12 +695,12 @@ class MainWindow(QMainWindow):
             self._los_mode = True
             self._los_points = []
             self.map_view.set_los_mode(True)
-            self.statusBar().showMessage("LOS: оберіть 2 точки на мапі")
+            self._show_hint_overlay("LOS: оберіть 2 точки на мапі", persistent=True)
         else:
             self._los_mode = False
             self._los_points = []
             self.map_view.set_los_mode(False)
-            self.statusBar().clearMessage()
+            self._clear_hint_overlay()
 
     def _open_horizon_calculator(self) -> None:
         QMessageBox.information(
@@ -591,7 +713,7 @@ class MainWindow(QMainWindow):
         self._horizon_mode = True
         self._horizon_points = []
         self.map_view.clear_horizon_points()
-        self.statusBar().showMessage("Горизонт: оберіть 2 точки на мапі")
+        self._show_hint_overlay("Горизонт: оберіть 2 точки на мапі", persistent=True)
 
     def _open_power_calculator(self) -> None:
         dialog = WattDbmCalculatorDialog(self)
@@ -606,12 +728,12 @@ class MainWindow(QMainWindow):
             self._horizon_points.append((lat, lon))
             self.map_view.add_horizon_point(lat, lon)
             if len(self._horizon_points) < 2:
-                self.statusBar().showMessage("Горизонт: оберіть другу точку")
+                self._show_hint_overlay("Горизонт: оберіть другу точку", persistent=True)
                 return
             a, b = self._horizon_points
             self._horizon_mode = False
             self._horizon_points = []
-            self.statusBar().clearMessage()
+            self._clear_hint_overlay()
             self._open_horizon_dialog(a, b)
             return
 
@@ -619,13 +741,13 @@ class MainWindow(QMainWindow):
             return
         self._los_points.append((lat, lon))
         if len(self._los_points) < 2:
-            self.statusBar().showMessage("LOS: оберіть другу точку")
+            self._show_hint_overlay("LOS: оберіть другу точку", persistent=True)
             return
         a, b = self._los_points
         self._los_mode = False
         self._los_points = []
         self.map_view.set_los_mode(False)
-        self.statusBar().clearMessage()
+        self._clear_hint_overlay()
         if self._los_action.isChecked():
             self._los_action.setChecked(False)
         self._run_los_between_points(a, b)
@@ -697,14 +819,22 @@ class MainWindow(QMainWindow):
         menu = QMenu(self)
         rename_action = menu.addAction("Перейменувати")
         link_action = menu.addAction("Створити лінк")
+        device_link_action = menu.addAction("Створити лінк між пристроями")
         delete_action = menu.addAction("Видалити сайт")
+        self._set_menu_action_icon(rename_action, "SP_FileDialogDetailedView")
+        self._set_menu_action_icon(link_action, "SP_ArrowForward")
+        self._set_menu_action_icon(device_link_action, "SP_ArrowForward")
+        self._set_menu_action_icon(delete_action, "SP_TrashIcon")
         chosen = menu.exec(self.map_view.mapToGlobal(QPoint(x, y)))
         if chosen == rename_action:
             self._on_map_request_rename_site(site_id)
             return
         if chosen == link_action:
             self._pending_link_site_id = site_id
-            self.statusBar().showMessage("Оберіть цільовий сайт для лінку")
+            self._show_hint_overlay("Оберіть цільовий сайт для лінку", persistent=True)
+            return
+        if chosen == device_link_action:
+            self._create_device_link_from_site_menu(site)
             return
         if chosen == delete_action:
             self._delete_site(site_id)
@@ -723,6 +853,7 @@ class MainWindow(QMainWindow):
         )
         menu = QMenu(self)
         delete_action = menu.addAction("Видалити лінк")
+        self._set_menu_action_icon(delete_action, "SP_TrashIcon")
         chosen = menu.exec(self.map_view.mapToGlobal(QPoint(x, y)))
         if chosen == delete_action:
             self._on_map_request_delete_link(link_id)
@@ -733,6 +864,22 @@ class MainWindow(QMainWindow):
             self.inspector.show_site(None)
             return
         node_id = item.data(0, Qt.ItemDataRole.UserRole)
+        if isinstance(node_id, str) and ":" in node_id and self._pending_link_device:
+            target_site_id, target_device_id = node_id.split(":", 1)
+            source_site_id, source_device_id = self._pending_link_device
+            if (target_site_id, target_device_id) != (source_site_id, source_device_id):
+                if target_site_id != source_site_id:
+                    QMessageBox.information(
+                        self,
+                        "Створення лінка",
+                        "Лінк між пристроями різних сайтів у цьому меню не підтримується. "
+                        "Оберіть пристрій у тому ж сайті.",
+                    )
+                    self._show_hint_overlay("Оберіть цільовий пристрій у тому ж сайті", persistent=True)
+                else:
+                    self._pending_link_device = None
+                    self._clear_hint_overlay()
+                    self._on_tree_request_device_link(source_site_id, source_device_id, target_device_id)
         site_id = node_id.split(":", 1)[0] if isinstance(node_id, str) else node_id
         if isinstance(site_id, str) and site_id in self._project.links:
             link = self._project.links.get(site_id)
@@ -895,6 +1042,7 @@ class MainWindow(QMainWindow):
         self._pending_coverage_site_ids.discard(site_id)
         self.map_view.remove_marker(site_id)
         self.project_tree.set_project(self._project)
+        self._sync_empty_project_state(show_overlay=True)
         self.inspector.show_site(None)
         self._dirty = True
 
@@ -1298,6 +1446,7 @@ class MainWindow(QMainWindow):
         self._pending_coverage_site_ids.clear()
         self.project_tree.set_project(self._project)
         self.map_view.clear_all()
+        self._sync_empty_project_state(show_overlay=True)
         self.inspector.show_site(None)
         self._ping_checker.set_devices([])
         self._refresh_monitoring()
@@ -1311,6 +1460,7 @@ class MainWindow(QMainWindow):
         self._dirty = False
         self._cancel_all_coverage_jobs(clear_assignments=True)
         self._pending_coverage_site_ids.clear()
+        self._sync_empty_project_state(show_overlay=True)
         self.project_tree.set_project(self._project)
         self.map_view.clear_all()
         for site in self._project.sites.values():
@@ -1364,17 +1514,145 @@ class MainWindow(QMainWindow):
         save_project(self._project_path, self._project)
         self._dirty = False
 
+    @staticmethod
+    def _normalized_ip_for_device(device: Device) -> str | None:
+        ip_text = (device.ip_address or "").strip()
+        if not ip_text:
+            return None
+        try:
+            ipaddress.ip_address(ip_text)
+        except ValueError:
+            return None
+        return ip_text
+
+    @staticmethod
+    def _sp(name: str):
+        return getattr(QStyle.StandardPixmap, name, None)
+
+    def _set_menu_action_icon(self, action, sp_name: str) -> None:
+        if action is None:
+            return
+        sp = self._sp(sp_name)
+        if sp is not None:
+            action.setIcon(self.style().standardIcon(sp))
+
+    @staticmethod
+    def _port_from_value(value: object) -> int | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text:
+            return None
+        try:
+            port = int(text)
+        except (TypeError, ValueError):
+            return None
+        if not (1 <= port <= 65535):
+            return None
+        return port
+
+    def _device_web_host(self, device: Device) -> str | None:
+        ip_text = self._normalized_ip_for_device(device)
+        if ip_text is None:
+            return None
+        port = self._port_from_value((device.ports or {}).get("web"))
+        if port is None:
+            port = self._port_from_value(device.port)
+        return f"{ip_text}:{port}" if port is not None else ip_text
+
+    def _device_ssh_command(self, device: Device) -> str | None:
+        ip_text = self._normalized_ip_for_device(device)
+        if ip_text is None:
+            return None
+        port = self._port_from_value((device.ports or {}).get("ssh"))
+        return f"ssh -p {port} {ip_text}" if port is not None else f"ssh {ip_text}"
+
+    @staticmethod
+    def _device_menu_summary(device: Device) -> str:
+        dtype = device.device_type.value if hasattr(device.device_type, "value") else str(device.device_type)
+        state = device.status.state.value if hasattr(device.status.state, "value") else str(device.status.state)
+        ip_text = device.ip_address or "no-ip"
+        return f"{device.name} • {dtype} • {state} • {ip_text}"
+
+    def _open_device_webfig(self, device: Device) -> None:
+        host = self._device_web_host(device)
+        if host is None:
+            QMessageBox.information(self, "WebFig", "У пристрою немає коректної IP адреси.")
+            return
+        QDesktopServices.openUrl(QUrl(f"https://{host}/"))
+
+    def _open_device_ssh(self, device: Device) -> None:
+        ssh_cmd = self._device_ssh_command(device)
+        if ssh_cmd is None:
+            QMessageBox.information(self, "SSH", "У пристрою немає коректної IP адреси.")
+            return
+        cmd_parts = ssh_cmd.split()
+        try:
+            if sys.platform.startswith("win"):
+                subprocess.Popen(["cmd", "/c", "start", *cmd_parts])
+            elif sys.platform == "darwin":
+                subprocess.Popen(["osascript", "-e", f'tell application "Terminal" to do script "{ssh_cmd}"'])
+            else:
+                subprocess.Popen(["x-terminal-emulator", "-e", *cmd_parts])
+        except Exception:
+            QMessageBox.information(self, "SSH", "Не вдалося відкрити SSH клієнт.")
+
+    def _ping_device_terminal(self, device: Device) -> None:
+        ip_text = self._normalized_ip_for_device(device)
+        if ip_text is None:
+            QMessageBox.information(self, "Ping", "У пристрою немає коректної IP адреси.")
+            return
+        try:
+            if sys.platform.startswith("win"):
+                subprocess.Popen(["cmd", "/c", "start", "ping", "-n", "4", ip_text])
+            elif sys.platform == "darwin":
+                subprocess.Popen(
+                    ["osascript", "-e", f'tell application "Terminal" to do script "ping -c 4 {ip_text}"']
+                )
+            else:
+                subprocess.Popen(["x-terminal-emulator", "-e", "ping", "-c", "4", ip_text])
+        except Exception:
+            QMessageBox.information(self, "Ping", "Не вдалося запустити ping.")
+
+    def _delete_tree_device_with_undo(self, site: Site, device: Device) -> None:
+        related_links = [
+            link
+            for link in site.links.values()
+            if link.device_a_id == device.id or link.device_b_id == device.id
+        ]
+        self._last_deleted_tree_device = (site.id, device, related_links)
+        if self._pending_link_device == (site.id, device.id):
+            self._pending_link_device = None
+            self._clear_hint_overlay()
+        site.remove_device(device.id)
+        self._show_hint_overlay(
+            f"Пристрій '{device.name}' видалено. Натисніть Ctrl+Z для відновлення.",
+            duration_ms=6000,
+        )
+
+    def _undo_last_deleted_tree_device(self) -> None:
+        if self._last_deleted_tree_device is None:
+            return
+        site_id, device, related_links = self._last_deleted_tree_device
+        site = self._project.sites.get(site_id)
+        if site is None:
+            self._last_deleted_tree_device = None
+            return
+        site.devices[device.id] = device
+        for link in related_links:
+            if link.device_a_id in site.devices and link.device_b_id in site.devices:
+                site.links[link.id] = link
+        self._last_deleted_tree_device = None
+        self.project_tree.set_project(self._project)
+        self._dirty = True
+        self._show_hint_overlay(f"Пристрій '{device.name}' відновлено.", duration_ms=4000)
+
     def _on_tree_context_menu(self, pos: QPoint) -> None:
         item = self.project_tree.itemAt(pos)
         if item is None:
             return
         node_id = item.data(0, Qt.ItemDataRole.UserRole)
-        menu = QMenu(self)
-        rename_action = menu.addAction("Перейменувати")
-        delete_action = menu.addAction("Видалити")
-        chosen = menu.exec(self.project_tree.viewport().mapToGlobal(pos))
-        if chosen not in (rename_action, delete_action):
-            return
+        changed = False
 
         if isinstance(node_id, str) and ":" in node_id:
             site_id, device_id = node_id.split(":", 1)
@@ -1384,18 +1662,108 @@ class MainWindow(QMainWindow):
             device = site.devices.get(device_id)
             if not device:
                 return
+            menu = QMenu(self)
+            menu.setToolTipsVisible(True)
+            header = menu.addAction(self._device_menu_summary(device))
+            header.setEnabled(False)
+            menu.addSeparator()
+            link_action = menu.addAction("Створити лінк")
+            cancel_link_action = menu.addAction("Скасувати створення лінка") if self._pending_link_device else None
+            menu.addSeparator()
+            open_web_action = menu.addAction("Відкрити WebFig")
+            open_ssh_action = menu.addAction("Відкрити SSH")
+            ping_action = menu.addAction("Ping пристрою")
+            copy_ip_action = menu.addAction("Копіювати IP")
+            copy_ssh_action = menu.addAction("Копіювати SSH команду")
+            menu.addSeparator()
+            rename_action = menu.addAction("Перейменувати")
+            delete_action = menu.addAction("Видалити")
+            undo_delete_action = menu.addAction("Скасувати видалення (Ctrl+Z)")
+            self._set_menu_action_icon(link_action, "SP_ArrowForward")
+            self._set_menu_action_icon(cancel_link_action, "SP_DialogCancelButton")
+            self._set_menu_action_icon(open_web_action, "SP_DriveNetIcon")
+            self._set_menu_action_icon(open_ssh_action, "SP_ComputerIcon")
+            self._set_menu_action_icon(ping_action, "SP_BrowserReload")
+            self._set_menu_action_icon(copy_ip_action, "SP_FileIcon")
+            self._set_menu_action_icon(copy_ssh_action, "SP_FileDialogContentsView")
+            self._set_menu_action_icon(rename_action, "SP_FileDialogDetailedView")
+            self._set_menu_action_icon(delete_action, "SP_TrashIcon")
+            self._set_menu_action_icon(undo_delete_action, "SP_ArrowBack")
+
+            web_host = self._device_web_host(device)
+            ssh_cmd = self._device_ssh_command(device)
+            has_ip = self._normalized_ip_for_device(device) is not None
+            has_pending_link = self._pending_link_device is not None
+            can_undo = self._last_deleted_tree_device is not None
+
+            def apply_enabled(action, enabled: bool, reason: str = "") -> None:
+                if action is None:
+                    return
+                action.setEnabled(enabled)
+                tip = reason if (not enabled and reason) else ""
+                action.setToolTip(tip)
+                action.setStatusTip(tip)
+
+            apply_enabled(open_web_action, web_host is not None, "Потрібна коректна IP адреса.")
+            apply_enabled(open_ssh_action, ssh_cmd is not None, "Потрібна коректна IP адреса.")
+            apply_enabled(ping_action, has_ip, "Потрібна коректна IP адреса.")
+            apply_enabled(copy_ip_action, has_ip, "Потрібна коректна IP адреса.")
+            apply_enabled(copy_ssh_action, ssh_cmd is not None, "Потрібна коректна IP адреса.")
+            apply_enabled(cancel_link_action, has_pending_link, "")
+            apply_enabled(undo_delete_action, can_undo, "Немає останньої операції видалення.")
+
+            chosen = menu.exec(self.project_tree.viewport().mapToGlobal(pos))
+            if chosen is None:
+                return
+            if chosen == link_action:
+                self._pending_link_device = (site_id, device_id)
+                self._show_hint_overlay("Оберіть цільовий пристрій у цьому сайті", persistent=True)
+                return
+            if chosen == cancel_link_action:
+                self._pending_link_device = None
+                self._clear_hint_overlay()
+                return
+            if chosen == copy_ip_action and has_ip:
+                QApplication.clipboard().setText((device.ip_address or "").strip())
+                self._show_hint_overlay("IP скопійовано.", duration_ms=2000)
+                return
+            if chosen == copy_ssh_action and ssh_cmd:
+                QApplication.clipboard().setText(ssh_cmd)
+                self._show_hint_overlay("SSH команду скопійовано.", duration_ms=2000)
+                return
+            if chosen == open_web_action:
+                self._open_device_webfig(device)
+                return
+            if chosen == open_ssh_action:
+                self._open_device_ssh(device)
+                return
+            if chosen == ping_action:
+                self._ping_device_terminal(device)
+                return
+            if chosen == undo_delete_action:
+                self._undo_last_deleted_tree_device()
+                return
             if chosen == delete_action:
-                if self._confirm_action("Підтвердження", f"Видалити пристрій '{device.name}'?"):
-                    site.remove_device(device_id)
+                self._delete_tree_device_with_undo(site, device)
+                changed = True
             else:
                 new_name, ok = QInputDialog.getText(
                     self, "Перейменувати пристрій", "Нова назва:", text=device.name
                 )
                 if ok and new_name.strip():
                     device.name = new_name.strip()
+                    changed = True
         elif isinstance(node_id, str) and node_id in self._project.links:
             link = self._project.links.get(node_id)
             if not link:
+                return
+            menu = QMenu(self)
+            rename_action = menu.addAction("Перейменувати")
+            delete_action = menu.addAction("Видалити")
+            self._set_menu_action_icon(rename_action, "SP_FileDialogDetailedView")
+            self._set_menu_action_icon(delete_action, "SP_TrashIcon")
+            chosen = menu.exec(self.project_tree.viewport().mapToGlobal(pos))
+            if chosen not in (rename_action, delete_action):
                 return
             if chosen == delete_action:
                 self._on_map_request_delete_link(link.id)
@@ -1412,11 +1780,24 @@ class MainWindow(QMainWindow):
                             self._link_info(link, site_a),
                             link.distance_km,
                         )
+                    changed = True
         else:
             site = self._project.sites.get(node_id)
             if not site:
                 return
-            if chosen == delete_action:
+            menu = QMenu(self)
+            device_link_action = menu.addAction("Створити лінк між пристроями")
+            rename_action = menu.addAction("Перейменувати")
+            delete_action = menu.addAction("Видалити")
+            self._set_menu_action_icon(device_link_action, "SP_ArrowForward")
+            self._set_menu_action_icon(rename_action, "SP_FileDialogDetailedView")
+            self._set_menu_action_icon(delete_action, "SP_TrashIcon")
+            chosen = menu.exec(self.project_tree.viewport().mapToGlobal(pos))
+            if chosen not in (device_link_action, rename_action, delete_action):
+                return
+            if chosen == device_link_action:
+                self._create_device_link_from_site_menu(site)
+            elif chosen == delete_action:
                 self._delete_site(site.id)
             else:
                 new_name, ok = QInputDialog.getText(self, "Перейменувати сайт", "Нова назва:", text=site.name)
@@ -1425,9 +1806,104 @@ class MainWindow(QMainWindow):
                     self.map_view.update_marker_label(
                         site.id, site.name, self._site_kind_label(self._site_kind_value(site))
                     )
+                    changed = True
 
+        if changed:
+            self.project_tree.set_project(self._project)
+            self._ping_checker.set_devices(self._all_devices())
+            self._refresh_monitoring()
+            self._dirty = True
+
+    @staticmethod
+    def _auto_device_link_sides(site: Site, device_a_id: str, device_b_id: str) -> tuple[str, str]:
+        a = site.devices.get(device_a_id)
+        b = site.devices.get(device_b_id)
+        if not a or not b or not a.position or not b.position:
+            return "east", "west"
+        dx = b.position[0] - a.position[0]
+        dy = b.position[1] - a.position[1]
+        if abs(dx) >= abs(dy):
+            return ("east", "west") if dx >= 0 else ("west", "east")
+        return ("south", "north") if dy >= 0 else ("north", "south")
+
+    def _choose_site_device(
+        self,
+        site: Site,
+        title: str,
+        prompt: str,
+        exclude_device_id: str | None = None,
+    ) -> str | None:
+        options: list[str] = []
+        mapping: dict[str, str] = {}
+        for device in site.devices.values():
+            if exclude_device_id is not None and device.id == exclude_device_id:
+                continue
+            dtype = device.device_type.value if hasattr(device.device_type, "value") else str(device.device_type)
+            label = f"{device.name} ({dtype}) [{device.id}]"
+            options.append(label)
+            mapping[label] = device.id
+        if not options:
+            return None
+        selected, ok = QInputDialog.getItem(self, title, prompt, options, 0, False)
+        if not ok or not selected:
+            return None
+        return mapping.get(selected)
+
+    def _create_device_link_from_site_menu(self, site: Site) -> bool:
+        if len(site.devices) < 2:
+            QMessageBox.information(
+                self,
+                "Лінк між пристроями",
+                f"У сайті '{site.name}' має бути щонайменше 2 пристрої.",
+            )
+            return False
+        device_a_id = self._choose_site_device(site, "Лінк між пристроями", "Оберіть перший пристрій:")
+        if device_a_id is None:
+            return False
+        device_b_id = self._choose_site_device(
+            site,
+            "Лінк між пристроями",
+            "Оберіть другий пристрій:",
+            exclude_device_id=device_a_id,
+        )
+        if device_b_id is None:
+            return False
+        return self._on_tree_request_device_link(site.id, device_a_id, device_b_id)
+
+    def _on_tree_request_device_link(self, site_id: str, device_a_id: str, device_b_id: str) -> bool:
+        site = self._project.sites.get(site_id)
+        if site is None:
+            return False
+        if device_a_id == device_b_id:
+            return False
+        if device_a_id not in site.devices or device_b_id not in site.devices:
+            return False
+
+        pair = {device_a_id, device_b_id}
+        for existing in site.links.values():
+            if {existing.device_a_id, existing.device_b_id} == pair:
+                QMessageBox.information(self, "Лінк", "Лінк між цими пристроями вже існує.")
+                return False
+
+        dialog = LinkFormDialog(self)
+        if dialog.exec() != dialog.DialogCode.Accepted:
+            return False
+
+        side_a, side_b = self._auto_device_link_sides(site, device_a_id, device_b_id)
+        link_id = uuid4().hex[:8]
+        site.links[link_id] = DeviceLink(
+            id=link_id,
+            device_a_id=device_a_id,
+            device_b_id=device_b_id,
+            port_a=side_a,
+            port_b=side_b,
+            link_type=dialog.link_type(),
+            cable_type=dialog.cable_type(),
+        )
         self.project_tree.set_project(self._project)
+        self.project_tree.select_node(site.id)
         self._dirty = True
+        return True
 
     def _rename_selected(self) -> None:
         item = self.project_tree.currentItem()
@@ -1578,23 +2054,23 @@ class MainWindow(QMainWindow):
             self._coverage_auto_paused = True
             self._coverage_action.setChecked(False)
         elif self._coverage_auto_paused:
-            self.statusBar().showMessage(
+            self._show_hint_overlay(
                 f"Памʼять {rss_mb:.0f} МБ: покриття призупинено. Увімкніть шар вручну після стабілізації.",
-                5000,
+                duration_ms=5000,
             )
 
     def _set_busy(self, message: str | None) -> None:
         if message:
             was_idle = self._busy_count == 0
             self._busy_count += 1
-            self.statusBar().showMessage(message)
+            self._show_busy_overlay(message)
             if was_idle:
                 QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
             return
         if self._busy_count > 0:
             self._busy_count -= 1
         if self._busy_count == 0:
-            self.statusBar().clearMessage()
+            self._clear_busy_overlay()
             QApplication.restoreOverrideCursor()
 
     def _finish_prefetch(self, token: int) -> None:

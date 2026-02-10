@@ -10,10 +10,12 @@ from PySide6.QtGui import (
     QCursor,
     QDesktopServices,
     QIntValidator,
+    QKeySequence,
     QPen,
     QPalette,
     QPixmap,
     QRegularExpressionValidator,
+    QShortcut,
 )
 from PySide6.QtCore import QRegularExpression
 from PySide6.QtWidgets import (
@@ -31,10 +33,12 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMenu,
     QMessageBox,
+    QInputDialog,
     QPushButton,
     QToolTip,
     QTextEdit,
     QVBoxLayout,
+    QStyle,
 )
 import subprocess
 import ipaddress
@@ -43,28 +47,19 @@ import sys
 from app.domain import CableType, Device, DeviceLink, DeviceType, LinkType, Site, StatusState
 
 
-class PortHandle(QGraphicsEllipseItem):
-    def __init__(self, parent: "DeviceNodeItem", side: str) -> None:
-        super().__init__(-4, -4, 8, 8, parent)
-        self.side = side
-        self.setBrush(QBrush(Qt.GlobalColor.darkGray))
-        self.setPen(QPen(Qt.GlobalColor.black, 1))
-        self.setAcceptHoverEvents(True)
-        self.setCursor(Qt.CursorShape.CrossCursor)
-
-
 class DeviceNodeItem(QGraphicsEllipseItem):
     _icon_cache: dict[str, QPixmap] = {}
     _icon_dir = Path(__file__).resolve().parent / "icons" / "site_view"
 
-    def __init__(self, device: Device, on_port_pressed, on_device_menu) -> None:
+    def __init__(self, device: Device, on_device_menu, on_device_left_click=None, on_device_double_click=None) -> None:
         super().__init__(-22, -22, 44, 44)
         self.device = device
         self._hovering = False
         self._hover_token = None
         self._tooltip_pos = None
-        self._on_port_pressed = on_port_pressed
         self._on_device_menu = on_device_menu
+        self._on_device_left_click = on_device_left_click
+        self._on_device_double_click = on_device_double_click
         self.setBrush(QBrush(Qt.GlobalColor.transparent))
         self.setPen(QPen(Qt.GlobalColor.transparent, 0))
         self.setFlags(
@@ -75,9 +70,13 @@ class DeviceNodeItem(QGraphicsEllipseItem):
         self.setAcceptHoverEvents(True)
         self.setAcceptedMouseButtons(Qt.MouseButton.LeftButton | Qt.MouseButton.RightButton)
         self._icon_item = QGraphicsPixmapItem(self)
+        self._icon_item.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+        self._icon_item.setAcceptHoverEvents(False)
         label = QGraphicsTextItem(device.name, self)
         label.setPos(-20, 26)
-        self._ports = self._create_ports()
+        label.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+        label.setAcceptHoverEvents(False)
+        self._label_item = label
         self._apply_status_style()
 
     def itemChange(self, change, value):
@@ -117,7 +116,18 @@ class DeviceNodeItem(QGraphicsEllipseItem):
         if event.button() == Qt.MouseButton.RightButton:
             self._on_device_menu(self, event.screenPos())
             return
+        if event.button() == Qt.MouseButton.LeftButton and self._on_device_left_click is not None:
+            if self._on_device_left_click(self):
+                event.accept()
+                return
         super().mousePressEvent(event)
+
+    def mouseDoubleClickEvent(self, event):  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton and self._on_device_double_click is not None:
+            if self._on_device_double_click(self):
+                event.accept()
+                return
+        super().mouseDoubleClickEvent(event)
 
     def _apply_status_style(self) -> None:
         self._update_icon()
@@ -155,36 +165,21 @@ class DeviceNodeItem(QGraphicsEllipseItem):
         self._icon_item.setPixmap(pixmap)
         self._icon_item.setOffset(-pixmap.width() / 2, -pixmap.height() / 2)
 
-    def _create_ports(self) -> dict[str, PortHandle]:
-        ports = {
-            "north": PortHandle(self, "north"),
-            "east": PortHandle(self, "east"),
-            "south": PortHandle(self, "south"),
-            "west": PortHandle(self, "west"),
-        }
-        self._position_ports(ports)
-        for port in ports.values():
-            port.mousePressEvent = self._make_port_click_handler(port)
-        return ports
-
-    def _position_ports(self, ports: dict[str, PortHandle]) -> None:
-        ports["north"].setPos(0, -22)
-        ports["south"].setPos(0, 22)
-        ports["west"].setPos(-22, 0)
-        ports["east"].setPos(22, 0)
-
-    def _make_port_click_handler(self, port: PortHandle):
-        def handler(event):
-            self._on_port_pressed(self, port.side)
-            return QGraphicsEllipseItem.mousePressEvent(port, event)
-
-        return handler
+    def set_link_source_highlight(self, enabled: bool) -> None:
+        if enabled:
+            self.setPen(QPen(QColor(34, 197, 94), 2))
+        else:
+            self.setPen(QPen(Qt.GlobalColor.transparent, 0))
 
     def port_scene_pos(self, side: str) -> QPointF:
-        port = self._ports.get(side)
-        if port is None:
-            return self.scenePos()
-        return port.scenePos()
+        offsets = {
+            "north": QPointF(0.0, -22.0),
+            "south": QPointF(0.0, 22.0),
+            "west": QPointF(-22.0, 0.0),
+            "east": QPointF(22.0, 0.0),
+        }
+        offset = offsets.get(side, QPointF(0.0, 0.0))
+        return self.scenePos() + offset
 
 
 class DeviceLinkItem(QGraphicsLineItem):
@@ -227,6 +222,9 @@ class DeviceLinkItem(QGraphicsLineItem):
     def contextMenuEvent(self, event):  # noqa: N802
         menu = QMenu()
         delete_action = menu.addAction("Видалити лінк")
+        sp = getattr(QStyle.StandardPixmap, "SP_TrashIcon", None)
+        if sp is not None:
+            delete_action.setIcon(QApplication.style().standardIcon(sp))
         chosen = menu.exec(event.screenPos())
         if chosen == delete_action:
             self._on_delete(self._link_id)
@@ -235,22 +233,6 @@ class DeviceLinkItem(QGraphicsLineItem):
 class NetworkView(QGraphicsView):
     def __init__(self, scene: QGraphicsScene, parent=None) -> None:
         super().__init__(scene, parent)
-        self._on_drag_move = None
-        self._on_drag_end = None
-
-    def set_drag_handlers(self, on_drag_move, on_drag_end) -> None:
-        self._on_drag_move = on_drag_move
-        self._on_drag_end = on_drag_end
-
-    def mouseMoveEvent(self, event):
-        if self._on_drag_move is not None:
-            self._on_drag_move(self.mapToScene(event.pos()))
-        super().mouseMoveEvent(event)
-
-    def mouseReleaseEvent(self, event):
-        if self._on_drag_end is not None:
-            self._on_drag_end(self.mapToScene(event.pos()))
-        super().mouseReleaseEvent(event)
 
 
 class SiteDevicesDialog(QDialog):
@@ -267,13 +249,17 @@ class SiteDevicesDialog(QDialog):
         self._view.setBackgroundBrush(QBrush(QApplication.palette().color(QPalette.Window)))
         self._view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._view.customContextMenuRequested.connect(self._open_context_menu)
-        self._view.set_drag_handlers(self._on_drag_move, self._on_drag_end)
 
-        self._drag_start: tuple[DeviceNodeItem, str] | None = None
-        self._drag_line: QGraphicsLineItem | None = None
+        self._pending_link_device_id: str | None = None
+        self._last_deleted_device: tuple[Device, list[DeviceLink]] | None = None
 
         top = QVBoxLayout()
         top.addWidget(QLabel("Мережа сайту"))
+        self._default_hint = "ПКМ по пристрою для дій. F2 перейменувати, Ctrl+Z відмінити видалення."
+        self._hint_label = QLabel(self._default_hint)
+        self._hint_label.setWordWrap(True)
+        self._hint_label.setStyleSheet("font-weight: 500;")
+        top.addWidget(self._hint_label)
         top.addWidget(self._view)
 
         actions = QHBoxLayout()
@@ -287,6 +273,19 @@ class SiteDevicesDialog(QDialog):
         top.addLayout(buttons)
 
         self.setLayout(top)
+        self._toast_label = QLabel("", self)
+        self._toast_label.setStyleSheet(
+            "QLabel { background: rgba(15, 23, 32, 220); color: white; "
+            "border-radius: 8px; padding: 8px 12px; font-weight: 600; }"
+        )
+        self._toast_label.hide()
+        self._toast_timer = QTimer(self)
+        self._toast_timer.setSingleShot(True)
+        self._toast_timer.timeout.connect(self._toast_label.hide)
+        self._rename_shortcut = QShortcut(QKeySequence("F2"), self)
+        self._rename_shortcut.activated.connect(self._rename_selected_device)
+        self._undo_shortcut = QShortcut(QKeySequence.Undo, self)
+        self._undo_shortcut.activated.connect(self._undo_last_device_delete)
         self._refresh_scene()
 
     @staticmethod
@@ -385,6 +384,8 @@ class SiteDevicesDialog(QDialog):
         self._node_items = {}
         for device in self._add_or_update_nodes():
             self._node_items[device.device.id] = device
+        if self._pending_link_device_id and self._pending_link_device_id not in self._node_items:
+            self._pending_link_device_id = None
 
         for link in self._site.links.values():
             a = self._node_items.get(link.device_a_id)
@@ -394,12 +395,18 @@ class SiteDevicesDialog(QDialog):
                 kind_value = link.link_type.value if hasattr(link.link_type, "value") else str(link.link_type)
                 item.set_label(self._link_label(kind_value))
                 self._scene.addItem(item)
+        self._sync_pending_link_ui()
 
     def _add_or_update_nodes(self) -> list[DeviceNodeItem]:
         items = []
         x = 0
         for device in self._site.devices.values():
-            item = DeviceNodeItem(device, self._on_port_pressed, self._on_device_menu)
+            item = DeviceNodeItem(
+                device,
+                self._on_device_menu,
+                self._on_device_left_click,
+                self._on_device_double_click,
+            )
             pos = device.position or (x, 0)
             item.setPos(QPointF(pos[0], pos[1]))
             item.setToolTip(device.name)
@@ -408,12 +415,144 @@ class SiteDevicesDialog(QDialog):
             x += 80
         return items
 
+    def keyPressEvent(self, event):  # noqa: N802
+        if event.key() == Qt.Key.Key_Escape and self._pending_link_device_id:
+            self._pending_link_device_id = None
+            self._sync_pending_link_ui()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def resizeEvent(self, event):  # noqa: N802
+        super().resizeEvent(event)
+        if self._toast_label.isVisible():
+            self._position_toast()
+
+    def _on_device_left_click(self, item: DeviceNodeItem) -> bool:
+        if self._pending_link_device_id is None:
+            return False
+        if self._pending_link_device_id == item.device.id:
+            self._show_toast("Оберіть інший пристрій для створення лінка.")
+            return True
+        source_item = self._node_items.get(self._pending_link_device_id)
+        self._pending_link_device_id = None
+        self._sync_pending_link_ui()
+        if source_item is None:
+            return True
+        self._create_device_link(source_item, item)
+        return True
+
+    def _on_device_double_click(self, item: DeviceNodeItem) -> bool:
+        if self._edit_device(item):
+            self._refresh_scene()
+        return True
+
+    def _sync_pending_link_ui(self) -> None:
+        source_item = self._node_items.get(self._pending_link_device_id) if self._pending_link_device_id else None
+        for node in self._node_items.values():
+            node.set_link_source_highlight(source_item is not None and node.device.id == source_item.device.id)
+        if source_item is None:
+            self._hint_label.setText(self._default_hint)
+        else:
+            self._hint_label.setText(
+                f"Створення лінка: джерело '{source_item.device.name}'. Натисніть ЛКМ по цільовому пристрою або Esc."
+            )
+
+    @staticmethod
+    def _sp(name: str):
+        return getattr(QStyle.StandardPixmap, name, None)
+
+    def _set_action_icon(self, action, sp_name: str) -> None:
+        if action is None:
+            return
+        sp = self._sp(sp_name)
+        if sp is not None:
+            action.setIcon(self.style().standardIcon(sp))
+
+    def _position_toast(self) -> None:
+        self._toast_label.adjustSize()
+        x = max(12, (self.width() - self._toast_label.width()) // 2)
+        y = max(12, self.height() - self._toast_label.height() - 16)
+        self._toast_label.move(x, y)
+
+    def _show_toast(self, text: str, duration_ms: int = 2200) -> None:
+        self._toast_label.setText(text)
+        self._position_toast()
+        self._toast_label.show()
+        self._toast_label.raise_()
+        self._toast_timer.start(duration_ms)
+
+    @staticmethod
+    def _normalized_ip(device: Device) -> str | None:
+        ip_value = (device.ip_address or "").strip()
+        if not ip_value:
+            return None
+        try:
+            ipaddress.ip_address(ip_value)
+        except ValueError:
+            return None
+        return ip_value
+
+    @staticmethod
+    def _port_from_value(value: object) -> int | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text:
+            return None
+        try:
+            port = int(text)
+        except (TypeError, ValueError):
+            return None
+        if not (1 <= port <= 65535):
+            return None
+        return port
+
+    def _device_web_host(self, device: Device) -> str | None:
+        ip_value = self._normalized_ip(device)
+        if ip_value is None:
+            return None
+        port = self._port_from_value((device.ports or {}).get("web"))
+        if port is None:
+            port = self._port_from_value(device.port)
+        return f"{ip_value}:{port}" if port is not None else ip_value
+
+    def _device_ssh_command(self, device: Device) -> str | None:
+        ip_value = self._normalized_ip(device)
+        if ip_value is None:
+            return None
+        port = self._port_from_value((device.ports or {}).get("ssh"))
+        return f"ssh -p {port} {ip_value}" if port is not None else f"ssh {ip_value}"
+
+    @staticmethod
+    def _device_summary(device: Device) -> str:
+        dtype = device.device_type.value if hasattr(device.device_type, "value") else str(device.device_type)
+        status = device.status.state.value if hasattr(device.status.state, "value") else str(device.status.state)
+        ip_text = device.ip_address or "no-ip"
+        return f"{device.name} • {dtype} • {status} • {ip_text}"
+
     def _open_context_menu(self, pos) -> None:
         menu = QMenu(self)
-        action_map = {}
         action_map = {menu.addAction("Додати пристрій"): "add"}
+        create_link_action = menu.addAction("Створити лінк між пристроями")
+        undo_action = menu.addAction("Скасувати видалення (Ctrl+Z)")
+        has_enough_devices = len(self._site.devices) >= 2
+        create_link_action.setEnabled(has_enough_devices)
+        link_reason = "Потрібно щонайменше два пристрої." if not has_enough_devices else ""
+        create_link_action.setToolTip(link_reason)
+        create_link_action.setStatusTip(link_reason)
+        undo_action.setEnabled(self._last_deleted_device is not None)
+        self._set_action_icon(next(iter(action_map.keys())), "SP_FileDialogNewFolder")
+        self._set_action_icon(create_link_action, "SP_ArrowForward")
+        self._set_action_icon(undo_action, "SP_ArrowBack")
         chosen = menu.exec(self._view.mapToGlobal(pos))
         if chosen is None:
+            return
+        if chosen == create_link_action:
+            self._create_device_link_from_context_menu()
+            return
+        if chosen == undo_action:
+            self._undo_last_device_delete()
             return
         if action_map.get(chosen) != "add":
             return
@@ -425,27 +564,146 @@ class SiteDevicesDialog(QDialog):
         self._site.add_device(device)
         self._refresh_scene()
 
+    def _pick_device_for_link(self, title: str, prompt: str, exclude_id: str | None = None) -> str | None:
+        options: list[str] = []
+        option_to_id: dict[str, str] = {}
+        for device in self._site.devices.values():
+            if exclude_id is not None and device.id == exclude_id:
+                continue
+            dtype = device.device_type.value if hasattr(device.device_type, "value") else str(device.device_type)
+            option = f"{device.name} ({dtype}, {device.id})"
+            options.append(option)
+            option_to_id[option] = device.id
+        if not options:
+            return None
+        selected, ok = QInputDialog.getItem(self, title, prompt, options, 0, False)
+        if not ok or not selected:
+            return None
+        return option_to_id.get(selected)
+
+    def _create_device_link_from_context_menu(self) -> None:
+        if len(self._site.devices) < 2:
+            QMessageBox.information(self, "Лінк", "Потрібно щонайменше два пристрої.")
+            return
+
+        first_device_id = self._pick_device_for_link("Створити лінк", "Оберіть перший пристрій:")
+        if first_device_id is None:
+            return
+        second_device_id = self._pick_device_for_link(
+            "Створити лінк",
+            "Оберіть другий пристрій:",
+            exclude_id=first_device_id,
+        )
+        if second_device_id is None:
+            return
+
+        first_item = self._node_items.get(first_device_id)
+        second_item = self._node_items.get(second_device_id)
+        if first_item is None or second_item is None:
+            self._refresh_scene()
+            first_item = self._node_items.get(first_device_id)
+            second_item = self._node_items.get(second_device_id)
+            if first_item is None or second_item is None:
+                QMessageBox.warning(self, "Лінк", "Не вдалося знайти вибрані пристрої.")
+                return
+
+        self._pending_link_device_id = None
+        self._sync_pending_link_ui()
+        self._create_device_link(first_item, second_item)
+
     def _on_device_menu(self, item: DeviceNodeItem, screen_pos) -> None:
         menu = QMenu(self)
+        menu.setToolTipsVisible(True)
+        header = menu.addAction(self._device_summary(item.device))
+        header.setEnabled(False)
+        menu.addSeparator()
+        start_link = menu.addAction("Створити лінк")
+        cancel_link = menu.addAction("Скасувати створення лінка") if self._pending_link_device_id else None
+        menu.addSeparator()
         open_web = menu.addAction("Відкрити WebFig")
         open_ssh = menu.addAction("Відкрити SSH")
+        ping_device = menu.addAction("Ping пристрою")
+        copy_ip = menu.addAction("Копіювати IP")
+        copy_ssh = menu.addAction("Копіювати SSH команду")
         menu.addSeparator()
         edit_device = menu.addAction("Редагувати")
+        rename_device = menu.addAction("Перейменувати (F2)")
         delete_device = menu.addAction("Видалити пристрій")
+        undo_delete = menu.addAction("Скасувати видалення (Ctrl+Z)")
+        self._set_action_icon(start_link, "SP_ArrowForward")
+        self._set_action_icon(cancel_link, "SP_DialogCancelButton")
+        self._set_action_icon(open_web, "SP_DriveNetIcon")
+        self._set_action_icon(open_ssh, "SP_ComputerIcon")
+        self._set_action_icon(ping_device, "SP_BrowserReload")
+        self._set_action_icon(copy_ip, "SP_FileIcon")
+        self._set_action_icon(copy_ssh, "SP_FileDialogContentsView")
+        self._set_action_icon(edit_device, "SP_FileDialogDetailedView")
+        self._set_action_icon(rename_device, "SP_LineEditClearButton")
+        self._set_action_icon(delete_device, "SP_TrashIcon")
+        self._set_action_icon(undo_delete, "SP_ArrowBack")
+
+        web_host = self._device_web_host(item.device)
+        ssh_cmd = self._device_ssh_command(item.device)
+        has_ip = self._normalized_ip(item.device) is not None
+        has_link_source = self._pending_link_device_id is not None
+        can_undo = self._last_deleted_device is not None
+
+        def apply_enabled(action, enabled: bool, reason: str = "") -> None:
+            if action is None:
+                return
+            action.setEnabled(enabled)
+            tip = reason if (not enabled and reason) else ""
+            action.setToolTip(tip)
+            action.setStatusTip(tip)
+
+        apply_enabled(open_web, web_host is not None, "Потрібна коректна IP адреса.")
+        apply_enabled(open_ssh, ssh_cmd is not None, "Потрібна коректна IP адреса.")
+        apply_enabled(ping_device, has_ip, "Потрібна коректна IP адреса.")
+        apply_enabled(copy_ip, has_ip, "Потрібна коректна IP адреса.")
+        apply_enabled(copy_ssh, ssh_cmd is not None, "Потрібна коректна IP адреса.")
+        apply_enabled(cancel_link, has_link_source, "")
+        apply_enabled(undo_delete, can_undo, "Немає останньої операції видалення.")
+
         chosen = menu.exec(screen_pos)
+        changed = False
+
+        if chosen == start_link:
+            self._pending_link_device_id = item.device.id
+            self._sync_pending_link_ui()
+            return
+        if chosen == cancel_link:
+            self._pending_link_device_id = None
+            self._sync_pending_link_ui()
+            return
+        if chosen == copy_ip and has_ip:
+            QApplication.clipboard().setText((item.device.ip_address or "").strip())
+            self._show_toast("IP скопійовано.")
+            return
+        if chosen == copy_ssh and ssh_cmd:
+            QApplication.clipboard().setText(ssh_cmd)
+            self._show_toast("SSH команду скопійовано.")
+            return
+        if chosen == ping_device and has_ip:
+            self._ping_device(item.device)
+            return
+        if chosen == undo_delete:
+            self._undo_last_device_delete()
+            return
+
         if chosen == open_web:
             self._open_webfig(item.device)
         elif chosen == open_ssh:
             self._open_ssh(item.device)
         elif chosen == edit_device:
-            pos = item.scenePos()
-            dialog = DeviceFormDialog(self, pos.x(), pos.y(), device=item.device)
-            if dialog.exec() == QDialog.DialogCode.Accepted:
-                dialog.apply_to_device(item.device)
+            changed = self._edit_device(item)
+        elif chosen == rename_device:
+            changed = self._rename_device(item)
         elif chosen == delete_device:
-            if self._confirm_action("Підтвердження", f"Видалити пристрій '{item.device.name}'?"):
-                self._site.remove_device(item.device.id)
-        self._refresh_scene()
+            changed = self._delete_device_with_undo(item.device.id)
+            if changed:
+                self._show_toast("Пристрій видалено. Ctrl+Z для відновлення.")
+        if changed:
+            self._refresh_scene()
 
     def _delete_device_link(self, link_id: str) -> None:
         link = self._site.links.get(link_id)
@@ -456,44 +714,97 @@ class SiteDevicesDialog(QDialog):
         self._site.links.pop(link_id, None)
         self._refresh_scene()
 
+    def _edit_device(self, item: DeviceNodeItem) -> bool:
+        pos = item.scenePos()
+        dialog = DeviceFormDialog(self, pos.x(), pos.y(), device=item.device)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return False
+        dialog.apply_to_device(item.device)
+        return True
+
+    def _rename_device(self, item: DeviceNodeItem) -> bool:
+        new_name, ok = QInputDialog.getText(self, "Перейменувати пристрій", "Нова назва:", text=item.device.name)
+        if not ok or not new_name.strip():
+            return False
+        item.device.name = new_name.strip()
+        return True
+
+    def _rename_selected_device(self) -> None:
+        selected = self._scene.selectedItems()
+        item = next((it for it in selected if isinstance(it, DeviceNodeItem)), None)
+        if item is None:
+            return
+        if self._rename_device(item):
+            self._refresh_scene()
+
+    def _delete_device_with_undo(self, device_id: str) -> bool:
+        device = self._site.devices.get(device_id)
+        if device is None:
+            return False
+        related_links = [
+            link
+            for link in self._site.links.values()
+            if link.device_a_id == device_id or link.device_b_id == device_id
+        ]
+        self._last_deleted_device = (device, related_links)
+        if self._pending_link_device_id == device_id:
+            self._pending_link_device_id = None
+        self._site.remove_device(device_id)
+        self._sync_pending_link_ui()
+        return True
+
+    def _undo_last_device_delete(self) -> None:
+        if self._last_deleted_device is None:
+            return
+        device, related_links = self._last_deleted_device
+        self._last_deleted_device = None
+        self._site.devices[device.id] = device
+        for link in related_links:
+            if link.device_a_id in self._site.devices and link.device_b_id in self._site.devices:
+                self._site.links[link.id] = link
+        self._refresh_scene()
+        self._show_toast(f"Пристрій '{device.name}' відновлено.")
+
     def _open_webfig(self, device: Device) -> None:
-        if not device.ip_address:
+        host = self._device_web_host(device)
+        if host is None:
             QMessageBox.information(self, "WebFig", "У пристрою немає IP адреси.")
             return
-        port = device.ports.get("web") if device.ports else None
-        if port is None:
-            port = (device.port or "").strip()
-        host = device.ip_address
-        if port:
-            host = f"{host}:{port}"
         url = QUrl(f"https://{host}/")
         QDesktopServices.openUrl(url)
 
     def _open_ssh(self, device: Device) -> None:
-        if not device.ip_address:
+        ssh_cmd = self._device_ssh_command(device)
+        if ssh_cmd is None:
             QMessageBox.information(self, "SSH", "У пристрою немає IP адреси.")
             return
-        ip = device.ip_address
-        port = device.ports.get("ssh") if device.ports else None
+        cmd_parts = ssh_cmd.split()
         try:
             if sys.platform.startswith("win"):
-                if port:
-                    subprocess.Popen(["cmd", "/c", "start", "ssh", "-p", str(port), ip])
-                else:
-                    subprocess.Popen(["cmd", "/c", "start", "ssh", ip])
+                subprocess.Popen(["cmd", "/c", "start", *cmd_parts])
             elif sys.platform == "darwin":
-                if port:
-                    cmd = f"ssh -p {port} {ip}"
-                else:
-                    cmd = f"ssh {ip}"
-                subprocess.Popen(["osascript", "-e", f'tell application "Terminal" to do script "{cmd}"'])
+                subprocess.Popen(["osascript", "-e", f'tell application "Terminal" to do script "{ssh_cmd}"'])
             else:
-                if port:
-                    subprocess.Popen(["x-terminal-emulator", "-e", "ssh", "-p", str(port), ip])
-                else:
-                    subprocess.Popen(["x-terminal-emulator", "-e", "ssh", ip])
+                subprocess.Popen(["x-terminal-emulator", "-e", *cmd_parts])
         except Exception:
             QMessageBox.information(self, "SSH", "Не вдалося відкрити SSH клієнт.")
+
+    def _ping_device(self, device: Device) -> None:
+        ip_value = self._normalized_ip(device)
+        if ip_value is None:
+            QMessageBox.information(self, "Ping", "У пристрою немає коректної IP адреси.")
+            return
+        try:
+            if sys.platform.startswith("win"):
+                subprocess.Popen(["cmd", "/c", "start", "ping", "-n", "4", ip_value])
+            elif sys.platform == "darwin":
+                subprocess.Popen(
+                    ["osascript", "-e", f'tell application "Terminal" to do script "ping -c 4 {ip_value}"']
+                )
+            else:
+                subprocess.Popen(["x-terminal-emulator", "-e", "ping", "-c", "4", ip_value])
+        except Exception:
+            QMessageBox.information(self, "Ping", "Не вдалося запустити ping.")
 
     def _confirm_action(self, title: str, message: str) -> bool:
         return (
@@ -511,57 +822,63 @@ class SiteDevicesDialog(QDialog):
             "optical": "Оптика",
         }.get(kind_value, kind_value)
 
-    def _on_port_pressed(self, item: DeviceNodeItem, side: str) -> None:
-        self._drag_start = (item, side)
-        start_pos = item.port_scene_pos(side)
-        self._drag_line = QGraphicsLineItem(start_pos.x(), start_pos.y(), start_pos.x(), start_pos.y())
-        self._drag_line.setPen(QPen(Qt.GlobalColor.darkGray, 2, Qt.PenStyle.DashLine))
-        self._scene.addItem(self._drag_line)
+    @staticmethod
+    def _opposite_side(side: str) -> str:
+        return {
+            "north": "south",
+            "south": "north",
+            "east": "west",
+            "west": "east",
+        }.get(side, "west")
 
-    def _on_drag_move(self, scene_pos: QPointF) -> None:
-        if self._drag_line is None:
-            return
-        line = self._drag_line.line()
-        self._drag_line.setLine(line.x1(), line.y1(), scene_pos.x(), scene_pos.y())
+    def _auto_link_sides(self, a: DeviceNodeItem, b: DeviceNodeItem) -> tuple[str, str]:
+        dx = b.scenePos().x() - a.scenePos().x()
+        dy = b.scenePos().y() - a.scenePos().y()
+        if abs(dx) >= abs(dy):
+            side_a = "east" if dx >= 0 else "west"
+        else:
+            side_a = "south" if dy >= 0 else "north"
+        side_b = self._opposite_side(side_a)
+        return side_a, side_b
 
-    def _on_drag_end(self, scene_pos: QPointF) -> None:
-        if self._drag_line is None or self._drag_start is None:
-            return
-        if self._drag_line is not None:
-            self._scene.removeItem(self._drag_line)
-        self._drag_line = None
+    def _has_device_link(self, device_a_id: str, device_b_id: str) -> bool:
+        pair = {device_a_id, device_b_id}
+        for link in self._site.links.values():
+            if {link.device_a_id, link.device_b_id} == pair:
+                return True
+        return False
 
-        item = self._scene.itemAt(scene_pos, self._view.transform())
-        while item is not None and not isinstance(item, PortHandle):
-            item = item.parentItem()
-        if item is None:
-            self._drag_start = None
-            return
-
-        a, a_side = self._drag_start
-        b = item.parentItem()
-        if not isinstance(b, DeviceNodeItem):
-            self._drag_start = None
-            return
-        b_side = item.side
+    def _create_device_link(
+        self,
+        a: DeviceNodeItem,
+        b: DeviceNodeItem,
+        side_a: str | None = None,
+        side_b: str | None = None,
+    ) -> bool:
+        if a.device.id == b.device.id:
+            QMessageBox.information(self, "Лінк", "Не можна створити лінк до цього ж пристрою.")
+            return False
+        if self._has_device_link(a.device.id, b.device.id):
+            QMessageBox.information(self, "Лінк", "Лінк між цими пристроями вже існує.")
+            return False
+        if side_a is None or side_b is None:
+            side_a, side_b = self._auto_link_sides(a, b)
 
         dialog = LinkFormDialog(self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
-            self._drag_start = None
-            return
+            return False
         link = DeviceLink(
             id=uuid4().hex[:8],
             device_a_id=a.device.id,
             device_b_id=b.device.id,
-            port_a=a_side,
-            port_b=b_side,
+            port_a=side_a,
+            port_b=side_b,
             link_type=dialog.link_type(),
             cable_type=dialog.cable_type(),
         )
         self._site.links[link.id] = link
-        self._drag_start = None
         self._refresh_scene()
-
+        return True
 
 class DeviceFormDialog(QDialog):
     def __init__(self, parent=None, pos_x: float = 0.0, pos_y: float = 0.0, device: Device | None = None) -> None:

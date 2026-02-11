@@ -97,7 +97,36 @@ class CoverageCalculator:
 
     @staticmethod
     def rx_sensitivity_dbm(antenna: AntennaParams) -> Optional[float]:
-        return antenna.rx_sensitivity_dbm
+        bw_mhz = CoverageCalculator._channel_width_mhz(antenna)
+        if bw_mhz is not None and bw_mhz > 0:
+            nf_db = antenna.noise_figure_db
+            required_sinr_db = antenna.required_sinr_db
+            if nf_db is not None and required_sinr_db is not None:
+                thermal_dbm = -174.0 + (10.0 * math.log10(bw_mhz * 1_000_000.0))
+                return thermal_dbm + nf_db + required_sinr_db
+
+        if antenna.rx_sensitivity_dbm is None:
+            return None
+
+        if bw_mhz is None or bw_mhz <= 0:
+            return antenna.rx_sensitivity_dbm
+
+        ref_mhz = CoverageCalculator._reference_channel_width_mhz(antenna)
+        return antenna.rx_sensitivity_dbm + (10.0 * math.log10(bw_mhz / ref_mhz))
+
+    @staticmethod
+    def _channel_width_mhz(antenna: AntennaParams) -> Optional[float]:
+        bw_mhz = antenna.channel_width_mhz
+        if bw_mhz is not None and bw_mhz > 0:
+            return bw_mhz
+        return CoverageCalculator._reference_channel_width_mhz(antenna)
+
+    @staticmethod
+    def _reference_channel_width_mhz(antenna: AntennaParams) -> float:
+        freq_ghz = antenna.frequency_ghz or 0.0
+        if 0.0 < freq_ghz < 1.0:
+            return 0.0125
+        return 20.0
 
     @staticmethod
     def _clamp(value: float, lo: float, hi: float) -> float:

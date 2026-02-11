@@ -175,7 +175,7 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 5)
         splitter.setStretchFactor(2, 1)
-        splitter.setSizes([220, 900, 260])
+        splitter.setSizes([220, 860, 360])
 
         self.setCentralWidget(splitter)
         self._init_actions()
@@ -1146,6 +1146,10 @@ class MainWindow(QMainWindow):
             target.rx_sensitivity_dbm = payload.get("rx_sensitivity_dbm")
             if "channel_width_mhz" in payload:
                 target.channel_width_mhz = payload.get("channel_width_mhz")
+            if "noise_figure_db" in payload:
+                target.noise_figure_db = payload.get("noise_figure_db")
+            if "required_sinr_db" in payload:
+                target.required_sinr_db = payload.get("required_sinr_db")
             target.misc_losses_db = payload.get("misc_losses_db")
             target.link_margin_db = payload.get("link_margin_db")
             if "applied" in payload:
@@ -1996,16 +2000,18 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _apply_channel_width(antenna: AntennaParams) -> AntennaParams:
-        if antenna.rx_sensitivity_dbm is None:
+        rx_sens = CoverageCalculator.rx_sensitivity_dbm(antenna)
+        if rx_sens is None:
             return antenna
-        bw_mhz = antenna.channel_width_mhz
-        if bw_mhz is None or bw_mhz <= 0:
-            return antenna
-        ref_mhz = 20.0
-        if bw_mhz <= 0:
-            return antenna
-        rx_sens = antenna.rx_sensitivity_dbm + (10.0 * log10(bw_mhz / ref_mhz))
-        return replace(antenna, rx_sensitivity_dbm=rx_sens)
+        # Freeze effective receiver threshold to avoid double application
+        # of channel-width / NF+SINR corrections in downstream calculations.
+        return replace(
+            antenna,
+            rx_sensitivity_dbm=rx_sens,
+            channel_width_mhz=None,
+            noise_figure_db=None,
+            required_sinr_db=None,
+        )
 
     @staticmethod
     def _environment_loss_db(env_type: str, distance_km: float, freq_ghz: float) -> float:

@@ -6,6 +6,7 @@ from typing import List
 
 from app.elevation import ElevationProvider
 from app.domain import Site
+from app.rf_propagation import profile_diffraction
 
 
 @dataclass
@@ -50,31 +51,20 @@ class LinkAnalyzer:
             freq_ghz = antenna_a.frequency_ghz
         elif antenna_b and antenna_b.frequency_ghz:
             freq_ghz = antenna_b.frequency_ghz
-        freq_valid = freq_ghz is not None and freq_ghz > 0
-        fresnel_factor = 0.6
-        earth_radius_m = 6371000.0 * 1.1
-        blocked = False
-        max_obstruction = 0.0
-        for i in range(1, len(elevations) - 1):
-            frac = distances[i] / total_km if total_km else 0
-            expected = start + (end - start) * frac
-            d1_m = distances[i] * 1000.0
-            d2_m = (total_km - distances[i]) * 1000.0
-            bulge_m = (d1_m * d2_m) / (2.0 * earth_radius_m) if total_km else 0.0
-            clearance = 0.0
-            if freq_valid and total_km:
-                r1 = 17.32 * ((distances[i] * (total_km - distances[i])) / (freq_ghz * total_km)) ** 0.5
-                clearance = fresnel_factor * r1
-            obstruction = (elevations[i] + bulge_m) - (expected - clearance)
-            if obstruction > 0:
-                blocked = True
-                max_obstruction = max(max_obstruction, obstruction)
-
-        los_ok = not blocked
-        clearance_needed = max_obstruction if blocked else 0.0
+        diffraction = profile_diffraction(
+            distances,
+            elevations,
+            start_total_height_m=start,
+            end_total_height_m=end,
+            freq_ghz=freq_ghz,
+            use_fresnel=True,
+            obstruction_grace_m=20.0,
+        )
+        clearance_needed = max(0.0, diffraction.max_los_obstruction_m)
+        los_ok = not diffraction.blocked and diffraction.diffraction_loss_db <= 0.2
         if los_ok:
             status = "LOS OK"
-        elif clearance_needed < 12:
+        elif not diffraction.blocked and diffraction.diffraction_loss_db <= 8.0:
             status = "Possible"
         else:
             status = "Blocked"

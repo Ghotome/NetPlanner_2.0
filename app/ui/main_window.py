@@ -3,9 +3,11 @@ from __future__ import annotations
 from collections import OrderedDict
 from datetime import datetime
 import base64
+import json
 import ipaddress
 import io
 import os
+import re
 import subprocess
 import sys
 from time import monotonic
@@ -15,6 +17,9 @@ from concurrent.futures import ThreadPoolExecutor
 from math import asin, atan2, ceil, cos, degrees, floor, log10, radians, sin, sqrt
 from uuid import uuid4
 from threading import Event
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 
 from PySide6.QtCore import QPoint, Qt, QTimer, Signal, QUrl
 from PySide6.QtWidgets import (
@@ -111,6 +116,7 @@ class MainWindow(QMainWindow):
             on_open_horizon=self._open_horizon_calculator,
             on_open_power=self._open_power_calculator,
             on_open_frequency=self._open_frequency_calculator,
+            on_search_map=self._on_map_search_query,
             parent=self,
         )
 
@@ -723,6 +729,169 @@ class MainWindow(QMainWindow):
     def _open_frequency_calculator(self) -> None:
         dialog = FrequencyCalculatorDialog(self)
         dialog.exec()
+
+    def _on_map_search_query(self, query: str) -> None:
+        query = query.strip()
+        if not query:
+            self.map_view.show_search_results([])
+            return
+
+        results: list[dict] = []
+        seen: set[tuple] = set()
+
+        def push_result(item: dict) -> None:
+            lat = item.get("lat")
+            lon = item.get("lon")
+            if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
+                return
+            key = (round(float(lat), 6), round(float(lon), 6), item.get("title", ""))
+            if key in seen:
+                return
+            seen.add(key)
+            results.append(item)
+
+        latlon = self._parse_latlon_query(query)
+        if latlon is not None:
+            lat, lon = latlon
+            push_result(
+                {
+                    "title": "Координати",
+                    "subtitle": f"{lat:.6f}, {lon:.6f}",
+                    "lat": lat,
+                    "lon": lon,
+                    "zoom": 15,
+                }
+            )
+
+        mgrs_coord = self._parse_mgrs_query(query)
+        if mgrs_coord is not None:
+            lat, lon = mgrs_coord
+            push_result(
+                {
+                    "title": "MGRS",
+                    "subtitle": f"{lat:.6f}, {lon:.6f}",
+                    "lat": lat,
+                    "lon": lon,
+                    "zoom": 15,
+                }
+            )
+
+        for item in self._search_local_map_entities(query):
+            push_result(item)
+
+        # Online geocoding as fallback for free-text search.
+        if latlon is None and mgrs_coord is None and len(query) >= 3:
+            for item in self._search_online_geocode(query):
+                push_result(item)
+
+        self.map_view.show_search_results(results[:12])
+
+    @staticmethod
+    def _parse_latlon_query(query: str) -> tuple[float, float] | None:
+        parts = [p for p in re.split(r"[,;\\s]+", query.strip()) if p]
+        if len(parts) != 2:
+            return None
+        try:
+            lat = float(parts[0])
+            lon = float(parts[1])
+        except ValueError:
+            return None
+        if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
+            return None
+        return lat, lon
+
+    @staticmethod
+    def _parse_mgrs_query(query: str) -> tuple[float, float] | None:
+        token = query.strip().upper().replace(" ", "")
+        if len(token) < 5:
+            return None
+        try:
+            import mgrs  # type: ignore
+        except Exception:
+            return None
+        try:
+            converter = mgrs.MGRS()
+            lat, lon = converter.toLatLon(token)
+        except Exception:
+            return None
+        if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
+            return None
+        return float(lat), float(lon)
+
+    def _search_local_map_entities(self, query: str) -> list[dict]:
+        q = query.strip().lower()
+        if not q:
+            return []
+        results: list[dict] = []
+        for site in self._project.sites.values():
+            kind = site.kind.value if hasattr(site.kind, "value") else str(site.kind)
+            haystack = " ".join([site.name.lower(), site.id.lower(), kind.lower()])
+            if q not in haystack:
+                continue
+            results.append(
+                {
+                    "title": site.name,
+                    "subtitle": f"{kind.upper()} • {site.location.lat:.6f}, {site.location.lon:.6f}",
+                    "lat": site.location.lat,
+                    "lon": site.location.lon,
+                    "zoom": 14,
+                    "site_id": site.id,
+                }
+            )
+        return results
+
+    @staticmethod
+    def _search_online_geocode(query: str) -> list[dict]:
+        params = urlencode(
+            {
+                "q": query,
+                "format": "jsonv2",
+                "addressdetails": "0",
+                "limit": "5",
+            }
+        )
+        url = f"https://nominatim.openstreetmap.org/search?{params}"
+        req = Request(
+            url,
+            headers={
+                "User-Agent": "NetPlanner2/2.0",
+                "Accept": "application/json",
+            },
+        )
+        try:
+            with urlopen(req, timeout=2.5) as response:
+                payload = response.read().decode("utf-8", errors="replace")
+        except (HTTPError, URLError, TimeoutError, OSError):
+            return []
+        try:
+            data = json.loads(payload)
+        except json.JSONDecodeError:
+            return []
+        if not isinstance(data, list):
+            return []
+        results: list[dict] = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            try:
+                lat = float(item.get("lat"))
+                lon = float(item.get("lon"))
+            except (TypeError, ValueError):
+                continue
+            if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
+                continue
+            display_name = str(item.get("display_name") or "").strip()
+            title = display_name.split(",")[0].strip() if display_name else "Geocode result"
+            results.append(
+                {
+                    "title": title,
+                    "subtitle": display_name or f"{lat:.6f}, {lon:.6f}",
+                    "lat": lat,
+                    "lon": lon,
+                    "zoom": 14,
+                }
+            )
+        return results
 
     def _on_map_click(self, lat: float, lon: float) -> None:
         if self._horizon_mode:

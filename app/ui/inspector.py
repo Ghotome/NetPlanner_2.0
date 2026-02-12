@@ -63,6 +63,22 @@ ANTENNA_PRESETS: dict[str, dict[str, float | str | None]] = {
         "link_margin_db": 14.0,
         "mcs": None,
     },
+    "wifi_2_4": {
+        "channel_width_mhz": 20.0,
+        "rx_sensitivity_dbm": -90.0,
+        "noise_figure_db": 8.0,
+        "required_sinr_db": 18.0,
+        "link_margin_db": 10.0,
+        "mcs": None,
+    },
+    "wifi_5_8": {
+        "channel_width_mhz": 20.0,
+        "rx_sensitivity_dbm": -87.0,
+        "noise_figure_db": 8.0,
+        "required_sinr_db": 20.0,
+        "link_margin_db": 10.0,
+        "mcs": None,
+    },
 }
 
 
@@ -190,6 +206,8 @@ class AntennaBlock(QWidget):
         self._preset.addItem("Analog VTX", "analog_vtx")
         self._preset.addItem("Analog telemetry", "analog_telemetry")
         self._preset.addItem("Digital video & telemetry", "digital_video_telemetry")
+        self._preset.addItem("WiFi 2.4 GHz", "wifi_2_4")
+        self._preset.addItem("WiFi 5.8 GHz", "wifi_5_8")
         self._preset.currentIndexChanged.connect(self._apply_selected_preset)
 
         label_preset = QLabel("Пресет:")

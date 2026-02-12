@@ -34,6 +34,7 @@ class MapBridge(QObject):
         on_open_horizon: Callable[[], None],
         on_open_power: Callable[[], None],
         on_open_frequency: Callable[[], None],
+        on_search_map: Callable[[str], None],
     ) -> None:
         super().__init__()
         self._on_show_context_menu = on_show_context_menu
@@ -57,6 +58,7 @@ class MapBridge(QObject):
         self._on_open_horizon = on_open_horizon
         self._on_open_power = on_open_power
         self._on_open_frequency = on_open_frequency
+        self._on_search_map = on_search_map
 
     @Slot(float, float, int, int)
     def showContextMenu(self, lat: float, lon: float, x: int, y: int) -> None:
@@ -132,6 +134,10 @@ class MapBridge(QObject):
     def openFrequencyCalculator(self) -> None:
         self._on_open_frequency()
 
+    @Slot(str)
+    def searchMap(self, query: str) -> None:
+        self._on_search_map(query)
+
     @Slot(float, float, float, float, int)
     def prefetchElevation(
         self, south: float, west: float, north: float, east: float, zoom: int
@@ -171,6 +177,7 @@ class MapView(QWebEngineView):
         on_open_horizon: Callable[[], None],
         on_open_power: Callable[[], None],
         on_open_frequency: Callable[[], None],
+        on_search_map: Callable[[str], None],
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -196,6 +203,7 @@ class MapView(QWebEngineView):
             on_open_horizon,
             on_open_power,
             on_open_frequency,
+            on_search_map,
         )
         self._channel = QWebChannel(self)
         self._channel.registerObject("bridge", self._bridge)
@@ -353,6 +361,10 @@ class MapView(QWebEngineView):
 
     def clear_horizon_points(self) -> None:
         self.page().runJavaScript("clearHorizonPoints();")
+
+    def show_search_results(self, results: list[dict]) -> None:
+        results_json = json.dumps(results, ensure_ascii=False)
+        self.page().runJavaScript(f"showSearchResults({results_json});")
 
     def update_link_meta(
         self, link_id: str, label: str, kind: str, info: str, distance_km: float | None

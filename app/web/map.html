@@ -145,9 +145,94 @@
       .tool-submenu-item:hover {
         background: rgba(255,255,255,0.24);
       }
+      .map-search {
+        position: absolute;
+        right: 10px;
+        left: auto;
+        top: 10px;
+        z-index: 2100;
+        width: min(420px, calc(100% - 72px));
+        background: var(--panel-bg);
+        border: 1px solid var(--panel-border);
+        border-radius: 10px;
+        box-shadow: var(--panel-shadow);
+        padding: 8px;
+        pointer-events: auto;
+      }
+      .map-search-row {
+        display: flex;
+        gap: 6px;
+      }
+      .map-search-input {
+        flex: 1;
+        border: 1px solid rgba(255,255,255,0.28);
+        border-radius: 8px;
+        background: rgba(255,255,255,0.14);
+        color: #f8fafc;
+        font-size: 13px;
+        padding: 8px 10px;
+      }
+      .map-search-input::placeholder {
+        color: rgba(248,250,252,0.68);
+      }
+      .map-search-btn {
+        border: 1px solid rgba(255,255,255,0.28);
+        border-radius: 8px;
+        background: rgba(255,255,255,0.16);
+        color: #f8fafc;
+        font-size: 12px;
+        padding: 8px 10px;
+        cursor: pointer;
+      }
+      .map-search-btn:hover {
+        background: rgba(255,255,255,0.24);
+      }
+      .map-search-results {
+        margin-top: 6px;
+        max-height: 220px;
+        overflow-y: auto;
+        display: none;
+      }
+      .map-search-item {
+        width: 100%;
+        text-align: left;
+        border: 1px solid rgba(255,255,255,0.2);
+        border-radius: 8px;
+        background: rgba(255,255,255,0.1);
+        color: #f8fafc;
+        padding: 7px 9px;
+        margin: 0 0 5px 0;
+        cursor: pointer;
+      }
+      .map-search-item:hover {
+        background: rgba(255,255,255,0.18);
+      }
+      .map-search-item-title {
+        font-size: 12px;
+        font-weight: 700;
+      }
+      .map-search-item-sub {
+        margin-top: 2px;
+        font-size: 11px;
+        opacity: 0.85;
+      }
+      .map-search-empty {
+        font-size: 12px;
+        opacity: 0.85;
+        color: #f8fafc;
+        padding: 6px 4px;
+      }
       @media (prefers-color-scheme: light) {
         .tool-submenu-title { color: #0f1720; }
         .tool-submenu-item { color: #0f1720; border-color: rgba(15,23,32,0.2); }
+        .map-search-input,
+        .map-search-btn,
+        .map-search-item {
+          color: #0f1720;
+          border-color: rgba(15,23,32,0.2);
+        }
+        .map-search-empty { color: #0f1720; }
+        .map-search-input::placeholder { color: rgba(15,23,32,0.55); }
       }
     </style>
   </head>
@@ -206,6 +291,17 @@
       `;
       L.DomEvent.disableClickPropagation(instrumentsContainer);
 
+      const searchContainer = L.DomUtil.create('div', 'map-search', map.getContainer());
+      searchContainer.innerHTML = `
+        <div class="map-search-row">
+          <input id="map-search-input" class="map-search-input" type="text" placeholder="Пошук" />
+          <button id="map-search-run" class="map-search-btn" type="button">Пошук</button>
+          <button id="map-search-clear" class="map-search-btn" type="button">Очистити</button>
+        </div>
+        <div id="map-search-results" class="map-search-results"></div>
+      `;
+      L.DomEvent.disableClickPropagation(searchContainer);
+
       map.createPane('coveragePane');
       map.getPane('coveragePane').style.zIndex = 250;
 
@@ -247,6 +343,7 @@
       let dragSourceId = null;
       let hoverTargetId = null;
       let calculatorsMenu = null;
+      let searchPin = null;
 
       function ensureCalculatorsMenu() {
         if (calculatorsMenu) { return; }
@@ -345,6 +442,108 @@
             cb();
           });
         }
+      }
+
+      function bindSearchControls() {
+        const input = document.getElementById('map-search-input');
+        const runBtn = document.getElementById('map-search-run');
+        const clearBtn = document.getElementById('map-search-clear');
+        if (!input || !runBtn || !clearBtn) { return; }
+
+        const submitSearch = () => {
+          const query = input.value.trim();
+          if (!query) {
+            showSearchResults([]);
+            return;
+          }
+          if (bridge && bridge.searchMap) {
+            bridge.searchMap(query);
+          }
+        };
+
+        runBtn.onclick = (evt) => {
+          evt.stopPropagation();
+          submitSearch();
+        };
+        clearBtn.onclick = (evt) => {
+          evt.stopPropagation();
+          clearSearchUI(true);
+        };
+        input.addEventListener('keydown', (evt) => {
+          if (evt.key !== 'Enter') { return; }
+          evt.preventDefault();
+          submitSearch();
+        });
+      }
+
+      function clearSearchUI(clearInput) {
+        const input = document.getElementById('map-search-input');
+        if (clearInput && input) {
+          input.value = '';
+        }
+        showSearchResults([]);
+        if (searchPin) {
+          map.removeLayer(searchPin);
+          searchPin = null;
+        }
+      }
+
+      function focusSearchResult(item) {
+        if (!item || !Number.isFinite(item.lat) || !Number.isFinite(item.lon)) { return; }
+        const zoom = Number.isFinite(item.zoom) ? item.zoom : 14;
+        map.setView([item.lat, item.lon], zoom);
+        if (searchPin) {
+          map.removeLayer(searchPin);
+        }
+        searchPin = L.circleMarker([item.lat, item.lon], {
+          radius: 7,
+          color: '#0ea5e9',
+          fillColor: '#38bdf8',
+          fillOpacity: 0.8,
+          weight: 2,
+        }).addTo(map);
+        if (item.site_id && bridge && bridge.selectNode) {
+          bridge.selectNode(item.site_id);
+        }
+      }
+
+      function showSearchResults(results) {
+        const resultsEl = document.getElementById('map-search-results');
+        if (!resultsEl) { return; }
+        const items = Array.isArray(results) ? results : [];
+        resultsEl.innerHTML = '';
+        if (!items.length) {
+          resultsEl.style.display = 'none';
+          return;
+        }
+        items.forEach((item) => {
+          if (!item || !Number.isFinite(item.lat) || !Number.isFinite(item.lon)) { return; }
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'map-search-item';
+          const title = (item.title || 'Результат').toString();
+          const subtitle = (item.subtitle || '').toString();
+          const titleEl = document.createElement('div');
+          titleEl.className = 'map-search-item-title';
+          titleEl.textContent = title;
+          const subEl = document.createElement('div');
+          subEl.className = 'map-search-item-sub';
+          subEl.textContent = subtitle;
+          btn.appendChild(titleEl);
+          btn.appendChild(subEl);
+          btn.onclick = (evt) => {
+            evt.stopPropagation();
+            focusSearchResult(item);
+          };
+          resultsEl.appendChild(btn);
+        });
+        if (!resultsEl.children.length) {
+          const empty = document.createElement('div');
+          empty.className = 'map-search-empty';
+          empty.textContent = 'Нічого не знайдено';
+          resultsEl.appendChild(empty);
+        }
+        resultsEl.style.display = 'block';
       }
 
       function ensureHorizonLayer() {
@@ -966,6 +1165,7 @@
       });
 
       map.on('click', (e) => {
+        clearSearchUI(true);
         if (azimuthMode) {
           handleAzimuthClick(e.latlng);
           return;
@@ -1032,8 +1232,9 @@
         resetRuler();
       };
       window.requestElevationPrefetch = requestElevationPrefetch;
+      window.showSearchResults = showSearchResults;
 
-      ensureBridgeReady(() => { bindToolButtons(); });
+      ensureBridgeReady(() => { bindToolButtons(); bindSearchControls(); });
 
       function bearingDeg(a, b) {
         const lat1 = a.lat * Math.PI / 180;

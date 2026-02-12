@@ -40,6 +40,7 @@ from app.coverage import CoverageCalculator
 from app.domain import AntennaParams, Device, DeviceLink, GeoPoint, Link, LinkKind, NetworkProject, Site, SiteKind, StatusState
 from app.elevation import ElevationProvider
 from app.link_analyzer import LinkAnalyzer, LinkProfile
+from app.rf_propagation import profile_diffraction
 from app.project_io import load_project, save_project
 from app.monitoring import PingChecker
 from app.ui.monitoring_panel import MonitoringPanel
@@ -174,7 +175,7 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 5)
         splitter.setStretchFactor(2, 1)
-        splitter.setSizes([220, 900, 260])
+        splitter.setSizes([220, 860, 360])
 
         self.setCentralWidget(splitter)
         self._init_actions()
@@ -766,7 +767,28 @@ class MainWindow(QMainWindow):
             self.map_view.clear_horizon_points()
             return
         distance_km = self._distance_km(lat1, lon1, lat2, lon2)
-        dialog = HorizonCalculatorDialog(elev_a, elev_b, distance_km, self)
+        samples = 40
+        profile_distances: list[float] = []
+        profile_elevations: list[float] = []
+        for i in range(samples + 1):
+            t = i / samples
+            lat = lat1 + (lat2 - lat1) * t
+            lon = lon1 + (lon2 - lon1) * t
+            elev = self._elevation.get_elevation(lat, lon)
+            if elev is None:
+                QMessageBox.warning(self, "Горизонт", "Немає даних висот для траси")
+                self.map_view.clear_horizon_points()
+                return
+            profile_elevations.append(elev)
+            profile_distances.append(distance_km * t)
+        dialog = HorizonCalculatorDialog(
+            elev_a,
+            elev_b,
+            distance_km,
+            profile_distances_km=profile_distances,
+            profile_elevations_m=profile_elevations,
+            parent=self,
+        )
         dialog.exec()
         self.map_view.clear_horizon_points()
 
@@ -1124,6 +1146,10 @@ class MainWindow(QMainWindow):
             target.rx_sensitivity_dbm = payload.get("rx_sensitivity_dbm")
             if "channel_width_mhz" in payload:
                 target.channel_width_mhz = payload.get("channel_width_mhz")
+            if "noise_figure_db" in payload:
+                target.noise_figure_db = payload.get("noise_figure_db")
+            if "required_sinr_db" in payload:
+                target.required_sinr_db = payload.get("required_sinr_db")
             target.misc_losses_db = payload.get("misc_losses_db")
             target.link_margin_db = payload.get("link_margin_db")
             if "applied" in payload:
@@ -1974,16 +2000,18 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _apply_channel_width(antenna: AntennaParams) -> AntennaParams:
-        if antenna.rx_sensitivity_dbm is None:
+        rx_sens = CoverageCalculator.rx_sensitivity_dbm(antenna)
+        if rx_sens is None:
             return antenna
-        bw_mhz = antenna.channel_width_mhz
-        if bw_mhz is None or bw_mhz <= 0:
-            return antenna
-        ref_mhz = 20.0
-        if bw_mhz <= 0:
-            return antenna
-        rx_sens = antenna.rx_sensitivity_dbm + (10.0 * log10(bw_mhz / ref_mhz))
-        return replace(antenna, rx_sensitivity_dbm=rx_sens)
+        # Freeze effective receiver threshold to avoid double application
+        # of channel-width / NF+SINR corrections in downstream calculations.
+        return replace(
+            antenna,
+            rx_sensitivity_dbm=rx_sens,
+            channel_width_mhz=None,
+            noise_figure_db=None,
+            required_sinr_db=None,
+        )
 
     @staticmethod
     def _environment_loss_db(env_type: str, distance_km: float, freq_ghz: float) -> float:
@@ -2389,9 +2417,6 @@ class MainWindow(QMainWindow):
         heading_x = sin(radians(azimuth))
         heading_y = cos(radians(azimuth))
         cos_half_bw = cos(radians(half_bw))
-        earth_radius_m = 6371000.0 * 1.1
-        wavelength_m = 0.3 / freq_ghz
-        fresnel_factor = 0.6
         base_fspl = 92.45 + (20.0 * log10(freq_ghz))
         elev_cache: OrderedDict[tuple[float, float], float | None] = OrderedDict()
         cache_limit = 20000
@@ -2532,10 +2557,11 @@ class MainWindow(QMainWindow):
                     if delta_no_diff < -5.0:
                         continue
                     target_height = target_elev + rx_height_m
-                    diff_loss = 0.0
-                    blocked = False
                     step_path_km = adaptive_step(dist_km)
                     path_steps = int(dist_km / step_path_km)
+                    profile_distances_km = [0.0]
+                    profile_elevations_m = [site_elev]
+                    blocked = False
                     for step_idx in range(1, path_steps + 1):
                         if cancel_event is not None and cancel_event.is_set():
                             return None
@@ -2551,28 +2577,26 @@ class MainWindow(QMainWindow):
                         if elev_s is None:
                             blocked = True
                             break
-                        los_height = base_height + (target_height - base_height) * frac
-                        clearance = 0.0
-                        d2_km = dist_km - d_km
-                        if dist_km > 0:
-                            r1 = 17.32 * ((d_km * d2_km) / (freq_ghz * dist_km)) ** 0.5
-                            clearance = fresnel_factor * r1
-                        d1_m = d_km * 1000.0
-                        d2_m = d2_km * 1000.0
-                        bulge_m = (d1_m * d2_m) / (2.0 * earth_radius_m)
-                        base_los = los_height - clearance
-                        elev_eff = elev_s + bulge_m
-                        excess = elev_eff - base_los
-                        if excess > 20.0:
-                            blocked = True
-                            break
-                        if excess > 0:
-                            v = excess * (2.0 * (d1_m + d2_m) / (wavelength_m * d1_m * d2_m)) ** 0.5
-                            loss_db = 6.9 + 20.0 * log10(((v - 0.1) ** 2 + 1) ** 0.5 + v - 0.1)
-                            if loss_db > diff_loss:
-                                diff_loss = loss_db
+                        profile_distances_km.append(d_km)
+                        profile_elevations_m.append(elev_s)
                     if blocked:
                         continue
+                    profile_distances_km.append(dist_km)
+                    profile_elevations_m.append(target_elev)
+                    allowed_diffraction_db = max(0.0, delta_no_diff + 5.0)
+                    diffraction = profile_diffraction(
+                        profile_distances_km,
+                        profile_elevations_m,
+                        start_total_height_m=base_height,
+                        end_total_height_m=target_height,
+                        freq_ghz=freq_ghz,
+                        use_fresnel=True,
+                        obstruction_grace_m=20.0,
+                        max_total_loss_db=allowed_diffraction_db,
+                    )
+                    if diffraction.blocked:
+                        continue
+                    diff_loss = diffraction.diffraction_loss_db
                     delta_eirp = delta_eirp_for(dist_km, diff_loss, env_loss)
                     if delta_eirp >= 5.0:
                         pixels[i, j] = (0, 200, 83, 160)
@@ -2772,11 +2796,7 @@ class MainWindow(QMainWindow):
         rx_height_m = antenna.rx_height_m
         if rx_height_m is None:
             rx_height_m = 2.0
-        fresnel_factor = 0.6
         freq_ghz = antenna.frequency_ghz
-        freq_valid = freq_ghz is not None and freq_ghz > 0
-        wavelength_m = 0.3 / freq_ghz if freq_valid else None
-        earth_radius_m = 6371000.0 * 1.1
         step_km = max(0.2, range_km / 12)
         sample_distances = []
         dist_cursor = step_km
@@ -2808,42 +2828,32 @@ class MainWindow(QMainWindow):
                 if elev is None:
                     break
                 target_height = elev + rx_height_m
-                los_ok = True
                 stride = 1 if idx < base_stride * 2 else base_stride
+                path_distances_km = [0.0]
+                path_elevations_m = [elevation]
+                missing_profile = False
                 for j in range(0, idx, stride):
-                    if cancel_event is not None and cancel_event.is_set():
-                        return None
                     d1, elev_j = samples[j]
                     if elev_j is None:
-                        continue
-                    d2 = dist - d1
-                    if d2 <= 0:
-                        continue
-                    los_height = base_height + (target_height - base_height) * (d1 / dist)
-                    clearance = 0.0
-                    if use_fresnel and freq_valid:
-                        r1 = 17.32 * ((d1 * d2) / (freq_ghz * dist)) ** 0.5
-                        clearance = fresnel_factor * r1
-                    d1_m = d1 * 1000.0
-                    d2_m = d2 * 1000.0
-                    bulge_m = (d1_m * d2_m) / (2.0 * earth_radius_m)
-                    base_los = los_height - clearance if use_fresnel else los_height
-                    elev_eff = elev_j + bulge_m
-                    excess = elev_eff - base_los
-                    if excess > 0:
-                        if excess > obstruction_grace_m:
-                            los_ok = False
-                            break
-                        if not freq_valid or not wavelength_m:
-                            los_ok = False
-                            break
-                        h_m = excess
-                        v = h_m * (2.0 * (d1_m + d2_m) / (wavelength_m * d1_m * d2_m)) ** 0.5
-                        loss_db = 6.9 + 20.0 * log10(((v - 0.1) ** 2 + 1) ** 0.5 + v - 0.1)
-                        if loss_db > allowed_diffraction_db:
-                            los_ok = False
-                            break
-                if not los_ok:
+                        missing_profile = True
+                        break
+                    path_distances_km.append(d1)
+                    path_elevations_m.append(elev_j)
+                if missing_profile:
+                    break
+                path_distances_km.append(dist)
+                path_elevations_m.append(elev)
+                diffraction = profile_diffraction(
+                    path_distances_km,
+                    path_elevations_m,
+                    start_total_height_m=base_height,
+                    end_total_height_m=target_height,
+                    freq_ghz=freq_ghz,
+                    use_fresnel=use_fresnel,
+                    obstruction_grace_m=obstruction_grace_m,
+                    max_total_loss_db=allowed_diffraction_db,
+                )
+                if diffraction.blocked or diffraction.diffraction_loss_db > allowed_diffraction_db:
                     break
                 last_ok_dist = dist
 

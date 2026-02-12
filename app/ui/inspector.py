@@ -22,6 +22,50 @@ from PySide6.QtWidgets import (
 from app.domain import AntennaParams, CableType, Link, LinkKind, LinkType, Site, SiteKind
 
 
+ANTENNA_PRESETS: dict[str, dict[str, float | str | None]] = {
+    "dmr": {
+        "channel_width_mhz": 0.0125,
+        "rx_sensitivity_dbm": -120.0,
+        "noise_figure_db": 7.0,
+        "required_sinr_db": 9.0,
+        "link_margin_db": 12.0,
+        "mcs": None,
+    },
+    "voice_analog": {
+        "channel_width_mhz": 0.0125,
+        "rx_sensitivity_dbm": -118.0,
+        "noise_figure_db": 7.0,
+        "required_sinr_db": 12.0,
+        "link_margin_db": 12.0,
+        "mcs": None,
+    },
+    "analog_vtx": {
+        "channel_width_mhz": 20.0,
+        "rx_sensitivity_dbm": -90.0,
+        "noise_figure_db": 8.0,
+        "required_sinr_db": 12.0,
+        "link_margin_db": 16.0,
+        "mcs": None,
+    },
+    "analog_telemetry": {
+        "channel_width_mhz": 0.0125,
+        "rx_sensitivity_dbm": -119.0,
+        "noise_figure_db": 7.0,
+        "required_sinr_db": 7.0,
+        "link_margin_db": 10.0,
+        "mcs": None,
+    },
+    "digital_video_telemetry": {
+        "channel_width_mhz": 20.0,
+        "rx_sensitivity_dbm": -88.0,
+        "noise_figure_db": 8.0,
+        "required_sinr_db": 16.0,
+        "link_margin_db": 14.0,
+        "mcs": None,
+    },
+}
+
+
 class AntennaBlock(QWidget):
     apply_requested = Signal(str, dict)
     delete_requested = Signal(str)
@@ -75,9 +119,12 @@ class AntennaBlock(QWidget):
         self._rx_height = QLineEdit(self)
         self._rx_sens = QLineEdit(self)
         self._channel_width = QLineEdit(self)
+        self._noise_figure = QLineEdit(self)
+        self._required_sinr = QLineEdit(self)
         self._losses = QLineEdit(self)
         self._margin = QLineEdit(self)
         self._mcs = QComboBox(self)
+        self._preset = QComboBox(self)
         self._calc_distance = QLineEdit(self)
         self._calc_fspl = QLineEdit(self)
         self._calc_required = QLineEdit(self)
@@ -118,6 +165,12 @@ class AntennaBlock(QWidget):
         ch_validator = QDoubleValidator(0.0001, 2000.0, 4, self)
         ch_validator.setLocale(QLocale.c())
         self._channel_width.setValidator(ch_validator)
+        nf_validator = QDoubleValidator(0.0, 30.0, 2, self)
+        nf_validator.setLocale(QLocale.c())
+        self._noise_figure.setValidator(nf_validator)
+        sinr_validator = QDoubleValidator(-20.0, 50.0, 2, self)
+        sinr_validator.setLocale(QLocale.c())
+        self._required_sinr.setValidator(sinr_validator)
         loss_validator = QDoubleValidator(0.0, 60.0, 2, self)
         loss_validator.setLocale(QLocale.c())
         self._losses.setValidator(loss_validator)
@@ -131,9 +184,19 @@ class AntennaBlock(QWidget):
         self._mcs.addItem("Auto", None)
         for idx in range(0, 13):
             self._mcs.addItem(f"MCS {idx}", f"mcs{idx}")
+        self._preset.addItem("Власні параметри", None)
+        self._preset.addItem("DMR", "dmr")
+        self._preset.addItem("Voice analog", "voice_analog")
+        self._preset.addItem("Analog VTX", "analog_vtx")
+        self._preset.addItem("Analog telemetry", "analog_telemetry")
+        self._preset.addItem("Digital video & telemetry", "digital_video_telemetry")
+        self._preset.currentIndexChanged.connect(self._apply_selected_preset)
 
+        label_preset = QLabel("Пресет:")
         label_rx_sens = QLabel("Чутливість RX (dBm):")
         label_channel_width = QLabel("Ширина каналу (МГц):")
+        label_noise_figure = QLabel("Noise Figure (дБ):")
+        label_required_sinr = QLabel("Поріг SINR (дБ):")
         label_rx_gain = QLabel("Підсилення RX (dBi):")
         label_rx_height = QLabel("Висота RX (м):")
         label_losses = QLabel("Втрати АФТ (дБ):")
@@ -152,6 +215,14 @@ class AntennaBlock(QWidget):
             "Analog VTX: 6.25/12.5 МГц для 5.8 ГГц.\n"
             "Детальніше дивиться у специфікації пристрою."
         )
+        label_noise_figure.setToolTip(
+            "Noise Figure приймача (NF). Якщо немає в специфікації, "
+            "використовуй пресет або типове значення 6–9 дБ."
+        )
+        label_required_sinr.setToolTip(
+            "Мінімальний SINR, за якого приймач стабільно декодує сигнал "
+            "(для обраного режиму/модуляції)."
+        )
         label_rx_gain.setToolTip("Підсилення приймальної антени зі специфікації.")
         label_rx_height.setToolTip("Висота приймальної антени над землею.")
         label_losses.setToolTip("Втрати на АФТ: кабель, конектори, грозозахист, роз'єми.")
@@ -165,12 +236,19 @@ class AntennaBlock(QWidget):
             "Обери MCS зі специфікації. Чутливість RX залежить від MCS.\n"
             "Після вибору внеси RX sensitivity зі специфікації."
         )
+        label_preset.setToolTip(
+            "Пресет заповнює поля орієнтовними консервативними параметрами.\n"
+            "Для точного розрахунку індивідуальні значення для кожного пристрою "
+            "потрібно вводити вручну зі специфікації."
+        )
+        self._preset.setToolTip(label_preset.toolTip())
         label_calc_distance.setToolTip("Введи відому дистанцію до приймача для оцінки FSPL та EIRP.")
         label_calc_fspl.setToolTip(
             "Затухання сигналу у вільному просторі (Free Space Path Loss) на введеній дистанції."
         )
         label_calc_ok.setToolTip("EIRP OK, якщо потужність передавача достатня для покриття дистанції.")
 
+        form.addRow(label_preset, self._preset)
         form.addRow(QLabel("Тип антени:"), self._antenna_type)
         form.addRow(QLabel("Азимут:"), self._azimuth)
         add_hint("Діапазон: 0–360°.")
@@ -193,6 +271,10 @@ class AntennaBlock(QWidget):
         add_hint("Діапазон: -150…-30 dBm.")
         form.addRow(label_channel_width, self._channel_width)
         add_hint("Діапазон: 0.001–2000 МГц.")
+        form.addRow(label_noise_figure, self._noise_figure)
+        add_hint("Діапазон: 0–30 dB.")
+        form.addRow(label_required_sinr, self._required_sinr)
+        add_hint("Діапазон: -20…50 dB.")
         form.addRow(label_losses, self._losses)
         add_hint("Діапазон: 0–60 dB.")
         form.addRow(label_margin, self._margin)
@@ -230,6 +312,8 @@ class AntennaBlock(QWidget):
             self._rx_height,
             self._rx_sens,
             self._channel_width,
+            self._noise_figure,
+            self._required_sinr,
             self._losses,
             self._margin,
             self._calc_distance,
@@ -271,10 +355,32 @@ class AntennaBlock(QWidget):
             if antenna.channel_width_mhz is not None:
                 text = f"{antenna.channel_width_mhz:.4f}".rstrip("0").rstrip(".")
                 self._channel_width.setText(text)
+            self._noise_figure.setText("" if antenna.noise_figure_db is None else str(antenna.noise_figure_db))
+            self._required_sinr.setText("" if antenna.required_sinr_db is None else str(antenna.required_sinr_db))
             self._losses.setText("" if antenna.misc_losses_db is None else str(antenna.misc_losses_db))
             self._margin.setText("" if antenna.link_margin_db is None else str(antenna.link_margin_db))
             self._update_eirp_calculator()
         self._validate_inputs()
+
+    def _apply_selected_preset(self) -> None:
+        preset_key = self._preset.currentData()
+        if not isinstance(preset_key, str):
+            return
+        preset = ANTENNA_PRESETS.get(preset_key)
+        if not isinstance(preset, dict):
+            return
+        mcs_value = preset.get("mcs")
+        with QSignalBlocker(self._mcs):
+            mcs_idx = self._mcs.findData(mcs_value)
+            if mcs_idx >= 0:
+                self._mcs.setCurrentIndex(mcs_idx)
+        self._set_float_field(self._rx_sens, preset.get("rx_sensitivity_dbm"))
+        self._set_float_field(self._channel_width, preset.get("channel_width_mhz"), max_precision=4)
+        self._set_float_field(self._noise_figure, preset.get("noise_figure_db"))
+        self._set_float_field(self._required_sinr, preset.get("required_sinr_db"))
+        self._set_float_field(self._margin, preset.get("link_margin_db"))
+        self._validate_inputs()
+        self._update_eirp_calculator()
 
     def _toggle_content(self) -> None:
         expanded = self._toggle_btn.isChecked()
@@ -318,6 +424,8 @@ class AntennaBlock(QWidget):
             "rx_height_m": float(self._rx_height.text()) if self._rx_height.text().strip() else None,
             "rx_sensitivity_dbm": float(self._rx_sens.text()) if self._rx_sens.text().strip() else None,
             "channel_width_mhz": float(self._channel_width.text()) if self._channel_width.text().strip() else None,
+            "noise_figure_db": float(self._noise_figure.text()) if self._noise_figure.text().strip() else None,
+            "required_sinr_db": float(self._required_sinr.text()) if self._required_sinr.text().strip() else None,
             "misc_losses_db": float(self._losses.text()) if self._losses.text().strip() else None,
             "link_margin_db": float(self._margin.text()) if self._margin.text().strip() else None,
             "applied": self._applied,
@@ -383,6 +491,8 @@ class AntennaBlock(QWidget):
             self._rx_gain,
             self._rx_height,
             self._rx_sens,
+            self._noise_figure,
+            self._required_sinr,
             self._losses,
             self._margin,
             self._calc_distance,
@@ -441,6 +551,14 @@ class AntennaBlock(QWidget):
             field.setText(new_text)
         field.setCursorPosition(cursor_pos)
 
+    @staticmethod
+    def _set_float_field(field: QLineEdit, value: object, max_precision: int = 2) -> None:
+        if not isinstance(value, (int, float)):
+            return
+        text = f"{float(value):.{max_precision}f}".rstrip("0").rstrip(".")
+        with QSignalBlocker(field):
+            field.setText(text)
+
 class InspectorPanel(QWidget):
     link_updated = Signal(str, dict)
     link_analyze_requested = Signal(str)
@@ -448,6 +566,7 @@ class InspectorPanel(QWidget):
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
+        self.setMinimumWidth(320)
         self._current_link_id: str | None = None
         self._empty_project_mode = False
 
@@ -796,6 +915,8 @@ class InspectorPanel(QWidget):
         new_antenna.rx_height_m = payload.get("rx_height_m")
         new_antenna.rx_sensitivity_dbm = payload.get("rx_sensitivity_dbm")
         new_antenna.channel_width_mhz = payload.get("channel_width_mhz")
+        new_antenna.noise_figure_db = payload.get("noise_figure_db")
+        new_antenna.required_sinr_db = payload.get("required_sinr_db")
         new_antenna.misc_losses_db = payload.get("misc_losses_db")
         new_antenna.link_margin_db = payload.get("link_margin_db")
         new_antenna.applied = False

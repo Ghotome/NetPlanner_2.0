@@ -81,6 +81,12 @@ ANTENNA_PRESETS: dict[str, dict[str, float | str | None]] = {
     },
 }
 
+ANTENNA_TYPE_DEFAULTS: dict[str, dict[str, float]] = {
+    "omni": {"azimuth_deg": 0.0, "beamwidth_deg": 360.0},
+    "sector": {"azimuth_deg": 0.0, "beamwidth_deg": 120.0},
+    "directional": {"azimuth_deg": 0.0, "beamwidth_deg": 35.0},
+}
+
 
 class AntennaBlock(QWidget):
     apply_requested = Signal(str, dict)
@@ -94,6 +100,9 @@ class AntennaBlock(QWidget):
         self._index = index
         self._applied = antenna.applied if antenna else False
         self._is_valid = True
+        self._initializing = True
+        self._field_error_labels: dict[QLineEdit, QLabel] = {}
+        self._field_error_messages: dict[QLineEdit, str] = {}
 
         self._toggle_btn = QToolButton(self)
         self._toggle_btn.setCheckable(True)
@@ -118,6 +127,17 @@ class AntennaBlock(QWidget):
             hint.setWordWrap(True)
             hint.setStyleSheet("color: #9aa0a6; font-size: 11px;")
             form.addRow(QLabel(""), hint)
+
+        def add_error(field: QLineEdit, text: str) -> None:
+            left = QLabel("", self)
+            left.hide()
+            label = QLabel("", self)
+            label.setWordWrap(True)
+            label.setStyleSheet("color: #dc2626; font-size: 11px;")
+            label.hide()
+            form.addRow(left, label)
+            self._field_error_labels[field] = label
+            self._field_error_messages[field] = text
 
         self._antenna_type = QComboBox(self)
         self._antenna_type.addItems(["omni", "sector", "directional"])
@@ -209,6 +229,7 @@ class AntennaBlock(QWidget):
         self._preset.addItem("WiFi 2.4 GHz", "wifi_2_4")
         self._preset.addItem("WiFi 5.8 GHz", "wifi_5_8")
         self._preset.currentIndexChanged.connect(self._apply_selected_preset)
+        self._antenna_type.currentIndexChanged.connect(self._on_antenna_type_changed)
 
         label_preset = QLabel("Пресет:")
         label_rx_sens = QLabel("Чутливість RX (dBm):")
@@ -270,35 +291,50 @@ class AntennaBlock(QWidget):
         form.addRow(QLabel("Тип антени:"), self._antenna_type)
         form.addRow(QLabel("Азимут:"), self._azimuth)
         add_hint("Діапазон: 0–360°.")
+        add_error(self._azimuth, "Діапазон 0–360°.")
         form.addRow(QLabel("Сектор випромінення(°):"), self._beamwidth)
         add_hint("Діапазон: 0–360°.")
+        add_error(self._beamwidth, "Діапазон 0–360°.")
         form.addRow(QLabel("Підсилення TX (dBi):"), self._gain)
         add_hint("Діапазон: 0–60 dBi.")
+        add_error(self._gain, "Діапазон 0–60 dBi.")
         form.addRow(QLabel("Висота антени TX (м):"), self._height)
         add_hint("Діапазон: 0–8000 м.")
+        add_error(self._height, "Діапазон 0–8000 м.")
         form.addRow(QLabel("Частота TX (МГц):"), self._frequency)
         add_hint("Діапазон: 0.1–30000 МГц.")
+        add_error(self._frequency, "Очікується МГц у діапазоні 0.1–30000.")
         form.addRow(QLabel("Потужність TX (dBm):"), self._tx_power)
         add_hint("Діапазон: -60…60 dBm.")
+        add_error(self._tx_power, "Діапазон -60…60 dBm.")
         form.addRow(label_mcs, self._mcs)
         form.addRow(label_rx_gain, self._rx_gain)
         add_hint("Діапазон: 0–60 dBi.")
+        add_error(self._rx_gain, "Діапазон 0–60 dBi.")
         form.addRow(label_rx_height, self._rx_height)
         add_hint("Діапазон: 0–8000 м.")
+        add_error(self._rx_height, "Діапазон 0–8000 м.")
         form.addRow(label_rx_sens, self._rx_sens)
         add_hint("Діапазон: -150…-30 dBm.")
+        add_error(self._rx_sens, "Діапазон -150…-30 dBm.")
         form.addRow(label_channel_width, self._channel_width)
         add_hint("Діапазон: 0.001–2000 МГц.")
+        add_error(self._channel_width, "Діапазон 0.001–2000 МГц.")
         form.addRow(label_noise_figure, self._noise_figure)
         add_hint("Діапазон: 0–30 dB.")
+        add_error(self._noise_figure, "Діапазон 0–30 dB.")
         form.addRow(label_required_sinr, self._required_sinr)
         add_hint("Діапазон: -20…50 dB.")
+        add_error(self._required_sinr, "Діапазон -20…50 dB.")
         form.addRow(label_losses, self._losses)
         add_hint("Діапазон: 0–60 dB.")
+        add_error(self._losses, "Діапазон 0–60 dB.")
         form.addRow(label_margin, self._margin)
         add_hint("Діапазон: 0–40 dB.")
+        add_error(self._margin, "Діапазон 0–40 dB.")
         form.addRow(label_calc_distance, self._calc_distance)
         add_hint("Діапазон: 0.1–300 км.")
+        add_error(self._calc_distance, "Діапазон 0.1–300 км.")
         form.addRow(label_calc_fspl, self._calc_fspl)
         form.addRow(label_calc_ok, self._calc_ok)
 
@@ -378,6 +414,11 @@ class AntennaBlock(QWidget):
             self._losses.setText("" if antenna.misc_losses_db is None else str(antenna.misc_losses_db))
             self._margin.setText("" if antenna.link_margin_db is None else str(antenna.link_margin_db))
             self._update_eirp_calculator()
+            if antenna.azimuth_deg is None or antenna.beamwidth_deg is None:
+                self._apply_antenna_type_defaults(force=False)
+        else:
+            self._apply_antenna_type_defaults(force=True)
+        self._initializing = False
         self._validate_inputs()
 
     def _apply_selected_preset(self) -> None:
@@ -405,6 +446,21 @@ class AntennaBlock(QWidget):
         self._content.setVisible(expanded)
         self._toggle_btn.setArrowType(Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow)
 
+    def _on_antenna_type_changed(self) -> None:
+        if self._initializing:
+            return
+        self._apply_antenna_type_defaults(force=True)
+        self._validate_inputs()
+
+    def _apply_antenna_type_defaults(self, *, force: bool) -> None:
+        defaults = ANTENNA_TYPE_DEFAULTS.get(self._antenna_type.currentText())
+        if defaults is None:
+            return
+        if force or not self._azimuth.text().strip():
+            self._set_float_field(self._azimuth, defaults["azimuth_deg"], max_precision=1)
+        if force or not self._beamwidth.text().strip():
+            self._set_float_field(self._beamwidth, defaults["beamwidth_deg"], max_precision=1)
+
     def _emit_apply(self) -> None:
         self._applied = True
         payload = self.to_payload()
@@ -427,12 +483,20 @@ class AntennaBlock(QWidget):
 
     def to_payload(self) -> dict:
         name = self._name.text().strip() or f"Антена {self._index}"
+        antenna_type = self._antenna_type.currentText()
+        defaults = ANTENNA_TYPE_DEFAULTS.get(antenna_type, {})
+        azimuth_deg = float(self._azimuth.text()) if self._azimuth.text().strip() else None
+        beamwidth_deg = float(self._beamwidth.text()) if self._beamwidth.text().strip() else None
+        if azimuth_deg is None:
+            azimuth_deg = defaults.get("azimuth_deg")
+        if beamwidth_deg is None:
+            beamwidth_deg = defaults.get("beamwidth_deg")
         return {
             "id": self.antenna_id,
             "name": name,
-            "antenna_type": self._antenna_type.currentText(),
-            "azimuth_deg": float(self._azimuth.text()) if self._azimuth.text().strip() else None,
-            "beamwidth_deg": float(self._beamwidth.text()) if self._beamwidth.text().strip() else None,
+            "antenna_type": antenna_type,
+            "azimuth_deg": azimuth_deg,
+            "beamwidth_deg": beamwidth_deg,
             "gain_dbi": float(self._gain.text()) if self._gain.text().strip() else None,
             "height_m": float(self._height.text()) if self._height.text().strip() else None,
             "frequency_ghz": self._mhz_to_ghz(self._frequency.text()),
@@ -519,6 +583,7 @@ class AntennaBlock(QWidget):
         for field in fields:
             valid = self._is_field_valid(field)
             self._set_field_validity(field, valid)
+            self._set_field_error(field, valid)
             all_valid = all_valid and valid
         self._apply_btn.setEnabled(all_valid)
         if all_valid != self._is_valid:
@@ -542,6 +607,19 @@ class AntennaBlock(QWidget):
             field.setStyleSheet("")
         else:
             field.setStyleSheet("border: 1px solid #dc2626;")
+
+    def _set_field_error(self, field: QLineEdit, valid: bool) -> None:
+        label = self._field_error_labels.get(field)
+        if label is None:
+            return
+        text = field.text().strip()
+        if valid or not text:
+            label.hide()
+            label.clear()
+            return
+        message = self._field_error_messages.get(field, "Некоректне значення.")
+        label.setText(message)
+        label.show()
 
     @staticmethod
     def _mhz_to_ghz(text: str) -> float | None:
@@ -598,6 +676,12 @@ class InspectorPanel(QWidget):
         self._site_type.addItem("CPE", SiteKind.CPE)
         self._site_lat = QLineEdit(self)
         self._site_lon = QLineEdit(self)
+        self._site_lat_error = QLabel("", self)
+        self._site_lon_error = QLabel("", self)
+        self._site_lat_error.setStyleSheet("color: #dc2626; font-size: 11px;")
+        self._site_lon_error.setStyleSheet("color: #dc2626; font-size: 11px;")
+        self._site_lat_error.hide()
+        self._site_lon_error.hide()
         self._site_elevation = QLabel("—")
         self._site_notes = QLabel("—")
         self._site_environment = QComboBox(self)
@@ -631,6 +715,7 @@ class InspectorPanel(QWidget):
 
         for field in (self._site_lat, self._site_lon):
             field.textChanged.connect(lambda _text, f=field: self._normalize_decimal(f))
+            field.textChanged.connect(self._validate_site_fields)
 
         label_name = QLabel("Назва:")
         label_type = QLabel("Тип:")
@@ -643,7 +728,13 @@ class InspectorPanel(QWidget):
         site_layout.addRow(label_name, self._site_name)
         site_layout.addRow(label_type, self._site_type)
         site_layout.addRow(label_lat, self._site_lat)
+        lat_error_left = QLabel("", self)
+        lat_error_left.hide()
+        site_layout.addRow(lat_error_left, self._site_lat_error)
         site_layout.addRow(label_lon, self._site_lon)
+        lon_error_left = QLabel("", self)
+        lon_error_left.hide()
+        site_layout.addRow(lon_error_left, self._site_lon_error)
         site_layout.addRow(label_elevation, self._site_elevation)
         site_layout.addRow(label_notes, self._site_notes)
         site_layout.addRow(label_environment, self._site_environment)
@@ -675,6 +766,10 @@ class InspectorPanel(QWidget):
         self._link_frequency.setValidator(freq_validator)
         self._link_freq_hint = QLabel("Діапазон: 0.1–30000 МГц.")
         self._link_freq_hint.setStyleSheet("color: #9aa0a6; font-size: 11px;")
+        self._link_freq_error = QLabel("", self)
+        self._link_freq_error.setStyleSheet("color: #dc2626; font-size: 11px;")
+        self._link_freq_error.setWordWrap(True)
+        self._link_freq_error.hide()
         self._link_frequency.textChanged.connect(self._validate_link_fields)
         self._link_ssid = QLineEdit(self)
         self._link_password = QLineEdit(self)
@@ -699,6 +794,9 @@ class InspectorPanel(QWidget):
         link_layout.addRow(QLabel("Дистанція:"), self._link_distance)
         link_layout.addRow(self._label_frequency, self._link_frequency)
         link_layout.addRow(QLabel(""), self._link_freq_hint)
+        link_freq_error_left = QLabel("", self)
+        link_freq_error_left.hide()
+        link_layout.addRow(link_freq_error_left, self._link_freq_error)
         link_layout.addRow(self._label_ssid, self._link_ssid)
         link_layout.addRow(self._label_password, self._link_password)
         link_layout.addRow(QLabel("Нотатки:"), self._link_notes)
@@ -783,6 +881,7 @@ class InspectorPanel(QWidget):
             self._empty_state_label.setVisible(self._empty_project_mode)
             self._current_link_id = None
             self._current_site_id = None
+            self._validate_site_fields()
             return
 
         self._empty_project_mode = False
@@ -805,6 +904,7 @@ class InspectorPanel(QWidget):
         self._empty_state_label.setVisible(False)
         self._current_link_id = None
         self._current_site_id = site.id
+        self._validate_site_fields()
 
     def _set_site_environment(self, value: str | None) -> None:
         idx = self._site_environment.findData(value or "")
@@ -975,6 +1075,7 @@ class InspectorPanel(QWidget):
             self._label_frequency,
             self._link_frequency,
             self._link_freq_hint,
+            self._link_freq_error,
             self._label_ssid,
             self._link_ssid,
             self._label_password,
@@ -992,9 +1093,41 @@ class InspectorPanel(QWidget):
         if is_wireless:
             valid = AntennaBlock._is_field_valid(self._link_frequency)
             AntennaBlock._set_field_validity(self._link_frequency, valid)
+            freq_text = self._link_frequency.text().strip()
+            if valid or not freq_text:
+                self._link_freq_error.hide()
+                self._link_freq_error.clear()
+            else:
+                self._link_freq_error.setText("Очікується МГц у діапазоні 0.1–30000.")
+                self._link_freq_error.show()
         else:
             AntennaBlock._set_field_validity(self._link_frequency, True)
+            self._link_freq_error.hide()
+            self._link_freq_error.clear()
         self._apply_btn.setEnabled(valid)
+
+    def _validate_site_fields(self) -> None:
+        lat_valid = AntennaBlock._is_field_valid(self._site_lat)
+        lon_valid = AntennaBlock._is_field_valid(self._site_lon)
+        AntennaBlock._set_field_validity(self._site_lat, lat_valid)
+        AntennaBlock._set_field_validity(self._site_lon, lon_valid)
+
+        lat_text = self._site_lat.text().strip()
+        lon_text = self._site_lon.text().strip()
+        if lat_valid or not lat_text:
+            self._site_lat_error.hide()
+            self._site_lat_error.clear()
+        else:
+            self._site_lat_error.setText("Діапазон -90…90.")
+            self._site_lat_error.show()
+        if lon_valid or not lon_text:
+            self._site_lon_error.hide()
+            self._site_lon_error.clear()
+        else:
+            self._site_lon_error.setText("Діапазон -180…180.")
+            self._site_lon_error.show()
+
+        self._site_apply_basic.setEnabled(lat_valid and lon_valid and self._current_site_id is not None)
 
     def _apply_link_changes(self) -> None:
         if self._current_link_id is None:
@@ -1034,10 +1167,18 @@ class InspectorPanel(QWidget):
     def _apply_site_basic_changes(self) -> None:
         if self._current_site_id is None:
             return
+        lat_text = self._site_lat.text().strip()
+        lon_text = self._site_lon.text().strip()
+        try:
+            lat = float(lat_text) if lat_text else None
+            lon = float(lon_text) if lon_text else None
+        except ValueError:
+            self._validate_site_fields()
+            return
         payload = {
             "kind": self._site_type.currentData(),
-            "lat": float(self._site_lat.text()) if self._site_lat.text().strip() else None,
-            "lon": float(self._site_lon.text()) if self._site_lon.text().strip() else None,
+            "lat": lat,
+            "lon": lon,
             "environment": self._site_environment.currentData(),
         }
         self.site_updated.emit(self._current_site_id, payload)

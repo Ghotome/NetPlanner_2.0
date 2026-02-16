@@ -143,6 +143,30 @@
         display: flex;
         gap: 6px;
       }
+      .map-search-sources {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-top: 7px;
+      }
+      .map-search-chip {
+        border: 1px solid rgba(255,255,255,0.28);
+        border-radius: 999px;
+        background: rgba(255,255,255,0.1);
+        color: #cbd5e1;
+        font-size: 11px;
+        line-height: 1;
+        padding: 5px 9px;
+        cursor: pointer;
+      }
+      .map-search-chip.active {
+        background: rgba(56, 189, 248, 0.25);
+        border-color: rgba(56, 189, 248, 0.8);
+        color: #f8fafc;
+      }
+      .map-search-chip:hover {
+        background: rgba(255,255,255,0.18);
+      }
       .map-search-input {
         flex: 1;
         border: 1px solid rgba(255,255,255,0.28);
@@ -196,22 +220,45 @@
         font-size: 11px;
         opacity: 0.85;
       }
+      .map-search-item-meta {
+        margin-top: 4px;
+        display: flex;
+        justify-content: flex-end;
+      }
+      .map-search-source-badge {
+        border: 1px solid rgba(255,255,255,0.25);
+        border-radius: 999px;
+        padding: 2px 8px;
+        font-size: 10px;
+        line-height: 1.2;
+        color: #e2e8f0;
+        background: rgba(255,255,255,0.09);
+      }
       .map-search-empty {
         font-size: 12px;
         opacity: 0.85;
         color: #f8fafc;
         padding: 6px 4px;
       }
+      .map-search-feedback {
+        margin-top: 6px;
+        font-size: 11px;
+        color: #fca5a5;
+        display: none;
+      }
       @media (prefers-color-scheme: light) {
         .tool-submenu-title { color: #0f1720; }
         .tool-submenu-item { color: #0f1720; border-color: rgba(15,23,32,0.2); }
         .map-search-input,
         .map-search-btn,
-        .map-search-item {
+        .map-search-item,
+        .map-search-chip,
+        .map-search-source-badge {
           color: #0f1720;
           border-color: rgba(15,23,32,0.2);
         }
         .map-search-empty { color: #0f1720; }
+        .map-search-feedback { color: #b91c1c; }
         .map-search-input::placeholder { color: rgba(15,23,32,0.55); }
       }
     </style>
@@ -261,6 +308,13 @@
           <button id="map-search-run" class="map-search-btn" type="button">Пошук</button>
           <button id="map-search-clear" class="map-search-btn" type="button">Очистити</button>
         </div>
+        <div id="map-search-sources" class="map-search-sources">
+          <button class="map-search-chip active" type="button" data-source="local">Локально</button>
+          <button class="map-search-chip active" type="button" data-source="coords">Координати</button>
+          <button class="map-search-chip active" type="button" data-source="mgrs">MGRS</button>
+          <button class="map-search-chip active" type="button" data-source="online">Онлайн</button>
+        </div>
+        <div id="map-search-feedback" class="map-search-feedback"></div>
         <div id="map-search-results" class="map-search-results"></div>
       `;
       L.DomEvent.disableClickPropagation(searchContainer);
@@ -307,6 +361,14 @@
       let hoverTargetId = null;
       let calculatorsMenu = null;
       let searchPin = null;
+      const searchSourceState = {
+        local: true,
+        coords: true,
+        mgrs: true,
+        online: true,
+      };
+      let lastSearchQuery = '';
+      let lastSearchSources = [];
 
       function ensureCalculatorsMenu() {
         if (calculatorsMenu) { return; }
@@ -407,16 +469,62 @@
         }
       }
 
+      function getActiveSearchSources() {
+        return Object.keys(searchSourceState).filter((key) => !!searchSourceState[key]);
+      }
+
+      function setSearchFeedback(message) {
+        const feedbackEl = document.getElementById('map-search-feedback');
+        if (!feedbackEl) { return; }
+        const text = (message || '').trim();
+        if (!text) {
+          feedbackEl.textContent = '';
+          feedbackEl.style.display = 'none';
+          return;
+        }
+        feedbackEl.textContent = text;
+        feedbackEl.style.display = 'block';
+      }
+
+      function looksLikeMgrsCandidate(query) {
+        const token = (query || '').trim().toUpperCase().replace(/\s+/g, '');
+        if (!token) { return false; }
+        return /^[0-9]{1,2}[A-Z]{3,}[0-9A-Z]*$/.test(token);
+      }
+
+      function syncSearchSourceChips() {
+        const chips = document.querySelectorAll('.map-search-chip[data-source]');
+        chips.forEach((chip) => {
+          const key = (chip.dataset.source || '').toLowerCase();
+          chip.classList.toggle('active', !!searchSourceState[key]);
+        });
+      }
+
       function bindSearchControls() {
         const input = document.getElementById('map-search-input');
         const runBtn = document.getElementById('map-search-run');
         const clearBtn = document.getElementById('map-search-clear');
+        const sourcesWrap = document.getElementById('map-search-sources');
         if (!input || !runBtn || !clearBtn) { return; }
 
         const submitSearch = () => {
           const query = input.value.trim();
+          lastSearchQuery = query;
           if (!query) {
+            setSearchFeedback('');
             showSearchResults([]);
+            return;
+          }
+          const activeSources = getActiveSearchSources();
+          lastSearchSources = activeSources.slice();
+          if (!activeSources.length) {
+            setSearchFeedback('Оберіть хоча б одне джерело пошуку.');
+            showSearchResults([]);
+            return;
+          }
+          setSearchFeedback('');
+          if (bridge && bridge.searchMapWithSources) {
+            bridge.searchMapWithSources(query, JSON.stringify(activeSources));
             return;
           }
           if (bridge && bridge.searchMap) {
@@ -437,6 +545,22 @@
           evt.preventDefault();
           submitSearch();
         });
+        if (sourcesWrap) {
+          const chips = sourcesWrap.querySelectorAll('.map-search-chip[data-source]');
+          chips.forEach((chip) => {
+            chip.addEventListener('click', (evt) => {
+              evt.stopPropagation();
+              const key = (chip.dataset.source || '').toLowerCase();
+              if (!(key in searchSourceState)) { return; }
+              searchSourceState[key] = !searchSourceState[key];
+              syncSearchSourceChips();
+              if (input.value.trim()) {
+                submitSearch();
+              }
+            });
+          });
+        }
+        syncSearchSourceChips();
       }
 
       function clearSearchUI(clearInput) {
@@ -444,6 +568,9 @@
         if (clearInput && input) {
           input.value = '';
         }
+        lastSearchQuery = '';
+        lastSearchSources = [];
+        setSearchFeedback('');
         showSearchResults([]);
         if (searchPin) {
           map.removeLayer(searchPin);
@@ -477,8 +604,15 @@
         resultsEl.innerHTML = '';
         if (!items.length) {
           resultsEl.style.display = 'none';
+          const mgrsOnly = lastSearchSources.length === 1 && lastSearchSources[0] === 'mgrs';
+          if (mgrsOnly && looksLikeMgrsCandidate(lastSearchQuery)) {
+            setSearchFeedback('MGRS не розпізнано.');
+          } else {
+            setSearchFeedback('');
+          }
           return;
         }
+        setSearchFeedback('');
         items.forEach((item) => {
           if (!item || !Number.isFinite(item.lat) || !Number.isFinite(item.lon)) { return; }
           const btn = document.createElement('button');
@@ -486,6 +620,7 @@
           btn.className = 'map-search-item';
           const title = (item.title || 'Результат').toString();
           const subtitle = (item.subtitle || '').toString();
+          const sourceLabel = (item.source_label || '').toString();
           const titleEl = document.createElement('div');
           titleEl.className = 'map-search-item-title';
           titleEl.textContent = title;
@@ -494,6 +629,15 @@
           subEl.textContent = subtitle;
           btn.appendChild(titleEl);
           btn.appendChild(subEl);
+          if (sourceLabel) {
+            const metaEl = document.createElement('div');
+            metaEl.className = 'map-search-item-meta';
+            const sourceEl = document.createElement('span');
+            sourceEl.className = 'map-search-source-badge';
+            sourceEl.textContent = sourceLabel;
+            metaEl.appendChild(sourceEl);
+            btn.appendChild(metaEl);
+          }
           btn.onclick = (evt) => {
             evt.stopPropagation();
             focusSearchResult(item);

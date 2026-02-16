@@ -220,6 +220,9 @@ class MainWindow(QMainWindow):
         self._rename_tree_shortcut.activated.connect(self._rename_selected)
         self._undo_tree_shortcut = QShortcut(QKeySequence.Undo, self)
         self._undo_tree_shortcut.activated.connect(self._undo_last_deleted_tree_device)
+        self._escape_modes_shortcut = QShortcut(QKeySequence("Esc"), self)
+        self._escape_modes_shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
+        self._escape_modes_shortcut.activated.connect(self._handle_escape_modes)
         self._hint_overlay_label = QLabel("", self)
         self._hint_overlay_label.setStyleSheet(
             "QLabel { background: rgba(15, 23, 32, 220); color: white; "
@@ -473,7 +476,7 @@ class MainWindow(QMainWindow):
         self._coverage_progress_job = (coverage_id, job_id)
         self._coverage_progress_total_chunks = None
         self._coverage_progress_done_chunks = 0
-        text = f"Покриття: старт ({site_name} / {antenna_name}){self._queue_suffix()}"
+        text = f"Покриття: розпочато розрахунок ({site_name} / {antenna_name}){self._queue_suffix()}"
         self._show_coverage_progress_widget(text, cancellable=True)
 
     def _finish_coverage_progress(self, coverage_id: str, job_id: int, state: str) -> None:
@@ -791,11 +794,18 @@ class MainWindow(QMainWindow):
         dialog = FrequencyCalculatorDialog(self)
         dialog.exec()
 
-    def _on_map_search_query(self, query: str) -> None:
+    def _on_map_search_query(self, query: str, sources: list[str] | None = None) -> None:
         query = query.strip()
         if not query:
             self.map_view.show_search_results([])
             return
+
+        allowed_sources = {"local", "coords", "mgrs", "online"}
+        selected_sources = (
+            {source for source in (sources or []) if source in allowed_sources}
+            if sources is not None
+            else set(allowed_sources)
+        )
 
         results: list[dict] = []
         seen: set[tuple] = set()
@@ -805,13 +815,18 @@ class MainWindow(QMainWindow):
             lon = item.get("lon")
             if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
                 return
-            key = (round(float(lat), 6), round(float(lon), 6), item.get("title", ""))
+            key = (
+                round(float(lat), 6),
+                round(float(lon), 6),
+                item.get("title", ""),
+                item.get("source", ""),
+            )
             if key in seen:
                 return
             seen.add(key)
             results.append(item)
 
-        latlon = self._parse_latlon_query(query)
+        latlon = self._parse_latlon_query(query) if "coords" in selected_sources else None
         if latlon is not None:
             lat, lon = latlon
             push_result(
@@ -821,10 +836,12 @@ class MainWindow(QMainWindow):
                     "lat": lat,
                     "lon": lon,
                     "zoom": 15,
+                    "source": "coords",
+                    "source_label": "Координати",
                 }
             )
 
-        mgrs_coord = self._parse_mgrs_query(query)
+        mgrs_coord = self._parse_mgrs_query(query) if "mgrs" in selected_sources else None
         if mgrs_coord is not None:
             lat, lon = mgrs_coord
             push_result(
@@ -834,14 +851,17 @@ class MainWindow(QMainWindow):
                     "lat": lat,
                     "lon": lon,
                     "zoom": 15,
+                    "source": "mgrs",
+                    "source_label": "MGRS",
                 }
             )
 
-        for item in self._search_local_map_entities(query):
-            push_result(item)
+        if "local" in selected_sources:
+            for item in self._search_local_map_entities(query):
+                push_result(item)
 
         # Online geocoding as fallback for free-text search.
-        if latlon is None and mgrs_coord is None and len(query) >= 3:
+        if "online" in selected_sources and latlon is None and mgrs_coord is None and len(query) >= 3:
             for item in self._search_online_geocode(query):
                 push_result(item)
 
@@ -897,6 +917,8 @@ class MainWindow(QMainWindow):
                     "lon": site.location.lon,
                     "zoom": 14,
                     "site_id": site.id,
+                    "source": "local",
+                    "source_label": "Локально",
                 }
             )
         return results
@@ -950,6 +972,8 @@ class MainWindow(QMainWindow):
                     "lat": lat,
                     "lon": lon,
                     "zoom": 14,
+                    "source": "online",
+                    "source_label": "Онлайн",
                 }
             )
         return results
@@ -1046,19 +1070,24 @@ class MainWindow(QMainWindow):
             self.map_view.set_horizon_mode(False)
             self.map_view.clear_horizon_points()
 
+    def _handle_escape_modes(self) -> bool:
+        active = (
+            self._height_action.isChecked()
+            or self._azimuth_action.isChecked()
+            or self._ruler_action.isChecked()
+            or self._los_action.isChecked()
+            or self._horizon_mode
+        )
+        if not active:
+            return False
+        self._deactivate_interaction_modes()
+        self._clear_hint_overlay()
+        self._show_hint_overlay("Режими інструментів вимкнено", duration_ms=1200)
+        return True
+
     def keyPressEvent(self, event):  # noqa: N802
         if event.key() == Qt.Key.Key_Escape:
-            active = (
-                self._height_action.isChecked()
-                or self._azimuth_action.isChecked()
-                or self._ruler_action.isChecked()
-                or self._los_action.isChecked()
-                or self._horizon_mode
-            )
-            if active:
-                self._deactivate_interaction_modes()
-                self._clear_hint_overlay()
-                self._show_hint_overlay("Режими інструментів вимкнено", duration_ms=1200)
+            if self._handle_escape_modes():
                 event.accept()
                 return
         super().keyPressEvent(event)
@@ -2584,11 +2613,11 @@ class MainWindow(QMainWindow):
             self._coverage_progress_done_chunks = 0
             if self._coverage_progress_total_chunks:
                 self._show_coverage_progress_widget(
-                    f"Покриття: йде 0% (0/{self._coverage_progress_total_chunks} чанків){queue}",
+                    f"Покриття: розрахунок... 0% (0/{self._coverage_progress_total_chunks} чанків){queue}",
                     cancellable=True,
                 )
             else:
-                self._show_coverage_progress_widget(f"Покриття: йде{queue}", cancellable=True)
+                self._show_coverage_progress_widget(f"Покриття: розрахунок...{queue}", cancellable=True)
             return
         if stage != "raster":
             return
@@ -2603,11 +2632,11 @@ class MainWindow(QMainWindow):
         if total and total > 0:
             percent = min(100, int(round((done / total) * 100)))
             self._show_coverage_progress_widget(
-                f"Покриття: йде {percent}% ({done}/{total} чанків){queue}",
+                f"Покриття: розрахунок... {percent}% ({done}/{total} чанків){queue}",
                 cancellable=True,
             )
             return
-        self._show_coverage_progress_widget(f"Покриття: йде ({done} чанків){queue}", cancellable=True)
+        self._show_coverage_progress_widget(f"Покриття: розрахунок... ({done} чанків){queue}", cancellable=True)
 
     def _apply_coverage_tile(self, coverage_id: str, job_id: int, tile: dict) -> None:
         if self._coverage_job_for_key.get(coverage_id) != job_id:

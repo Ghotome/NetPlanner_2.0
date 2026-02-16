@@ -676,14 +676,13 @@ class MainWindow(QMainWindow):
         dialog = EirpCalculatorDialog(antenna, self)
         dialog.exec()
 
+    def _show_toast(self, message: str, duration_ms: int = 2400) -> None:
+        self._show_hint_overlay(message, duration_ms=duration_ms, persistent=False)
+
     def _toggle_los_mode(self, enabled: bool) -> None:
         if enabled:
             self._deactivate_interaction_modes(except_mode="los")
-            QMessageBox.information(
-                self,
-                "LOS",
-                "Оберіть 2 точки на мапі для розрахунку траекторії прямої видимості між ними.",
-            )
+            self._show_toast("LOS: оберіть 2 точки на мапі для розрахунку прямої видимості.", duration_ms=3000)
             self._los_mode = True
             self._los_points = []
             self.map_view.set_los_mode(True)
@@ -696,12 +695,9 @@ class MainWindow(QMainWindow):
 
     def _open_horizon_calculator(self) -> None:
         self._deactivate_interaction_modes(except_mode="horizon")
-        QMessageBox.information(
-            self,
-            "Горизонт",
-            "Оберіть 2 точки на мапі: передавач і приймач.\n"
-            "Після вибору буде доступне введення висоти антен для розрахунку горизонту.\n"
-            "Рослинність і забудова не враховані, реальний горизонт буде меншим.",
+        self._show_toast(
+            "Горизонт: оберіть TX і RX точки. Рослинність/забудова не враховані.",
+            duration_ms=3600,
         )
         self._horizon_mode = True
         self._horizon_points = []
@@ -912,7 +908,7 @@ class MainWindow(QMainWindow):
 
     def _open_horizon_dialog(self, a: tuple[float, float], b: tuple[float, float]) -> None:
         if not self._elevation.available:
-            QMessageBox.warning(self, "Горизонт", "Немає даних висот (Pillow?)")
+            self._show_toast("Горизонт: немає даних висот (Pillow?).")
             self.map_view.set_horizon_mode(False)
             self.map_view.clear_horizon_points()
             return
@@ -921,7 +917,7 @@ class MainWindow(QMainWindow):
         elev_a = self._elevation.get_elevation(lat1, lon1)
         elev_b = self._elevation.get_elevation(lat2, lon2)
         if elev_a is None or elev_b is None:
-            QMessageBox.warning(self, "Горизонт", "Немає даних висот для обраних точок")
+            self._show_toast("Горизонт: немає даних висот для обраних точок.")
             self.map_view.set_horizon_mode(False)
             self.map_view.clear_horizon_points()
             return
@@ -935,7 +931,7 @@ class MainWindow(QMainWindow):
             lon = lon1 + (lon2 - lon1) * t
             elev = self._elevation.get_elevation(lat, lon)
             if elev is None:
-                QMessageBox.warning(self, "Горизонт", "Немає даних висот для траси")
+                self._show_toast("Горизонт: немає даних висот для траси.")
                 self.map_view.set_horizon_mode(False)
                 self.map_view.clear_horizon_points()
                 return
@@ -991,7 +987,7 @@ class MainWindow(QMainWindow):
 
     def _run_los_between_points(self, a: tuple[float, float], b: tuple[float, float]) -> None:
         if not self._elevation.available:
-            QMessageBox.warning(self, "LOS", "Немає даних висот (Pillow?)")
+            self._show_toast("LOS: немає даних висот (Pillow?).")
             return
         lat1, lon1 = a
         lat2, lon2 = b
@@ -1006,7 +1002,7 @@ class MainWindow(QMainWindow):
             lon = lon1 + (lon2 - lon1) * t
             elev = self._elevation.get_elevation(lat, lon)
             if elev is None:
-                QMessageBox.warning(self, "LOS", "Немає даних висот для траси")
+                self._show_toast("LOS: немає даних висот для траси.")
                 return
             elevations.append(elev)
             distances.append(total_km * t)

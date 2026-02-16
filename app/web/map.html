@@ -45,26 +45,6 @@
         display: block;
         filter: drop-shadow(0 1px 2px rgba(0,0,0,0.6));
       }
-      .elevation-legend {
-        background: rgba(15, 23, 32, 0.85);
-        color: #fff;
-        padding: 8px 10px;
-        border-radius: 6px;
-        font: 12px/1.2 sans-serif;
-      }
-      .legend-title { font-weight: 600; margin-bottom: 6px; }
-      .legend-bar {
-        width: 180px;
-        height: 8px;
-        background: linear-gradient(90deg, #c0392b 0%, #e67e22 35%, #f1c40f 60%, #27ae60 100%);
-        border-radius: 4px;
-        margin-bottom: 4px;
-      }
-      .legend-labels {
-        display: flex;
-        justify-content: space-between;
-        font-size: 10px;
-      }
       .map-tools,
       .map-instruments {
         background: var(--panel-bg);
@@ -222,21 +202,6 @@
         color: #f8fafc;
         padding: 6px 4px;
       }
-      .mode-badge {
-        position: absolute;
-        left: 52px;
-        top: 70px;
-        z-index: 2100;
-        display: none;
-        background: rgba(14, 165, 233, 0.88);
-        color: #f8fafc;
-        border: 1px solid rgba(255,255,255,0.32);
-        border-radius: 999px;
-        padding: 6px 10px;
-        font-size: 12px;
-        font-weight: 700;
-        box-shadow: 0 8px 16px rgba(0,0,0,0.35);
-      }
       @media (prefers-color-scheme: light) {
         .tool-submenu-title { color: #0f1720; }
         .tool-submenu-item { color: #0f1720; border-color: rgba(15,23,32,0.2); }
@@ -248,11 +213,6 @@
         }
         .map-search-empty { color: #0f1720; }
         .map-search-input::placeholder { color: rgba(15,23,32,0.55); }
-        .mode-badge {
-          color: #0f1720;
-          border-color: rgba(15,23,32,0.2);
-          background: rgba(56, 189, 248, 0.85);
-        }
       }
     </style>
   </head>
@@ -270,7 +230,7 @@
         'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png',
         { maxZoom: 15, opacity: 0.65, className: 'elevation-tiles' }
       );
-      
+
       const toolsControl = L.control({ position: 'bottomleft' });
       toolsControl.onAdd = function () {
         const div = L.DomUtil.create('div', 'map-tools');
@@ -304,9 +264,6 @@
         <div id="map-search-results" class="map-search-results"></div>
       `;
       L.DomEvent.disableClickPropagation(searchContainer);
-
-      const modeBadge = L.DomUtil.create('div', 'mode-badge', map.getContainer());
-      modeBadge.textContent = '';
 
       map.createPane('coveragePane');
       map.getPane('coveragePane').style.zIndex = 250;
@@ -350,7 +307,6 @@
       let hoverTargetId = null;
       let calculatorsMenu = null;
       let searchPin = null;
-      let horizonMode = false;
 
       function ensureCalculatorsMenu() {
         if (calculatorsMenu) { return; }
@@ -894,28 +850,6 @@
         if (a) { a.classList.toggle('active', azimuthMode); }
         if (r) { r.classList.toggle('active', rulerMode); }
         if (l) { l.classList.toggle('active', losMode); }
-        updateInteractionBadge();
-      }
-
-      function updateInteractionBadge() {
-        let text = '';
-        if (horizonMode) {
-          text = 'Режим: Горизонт';
-        } else if (losMode) {
-          text = 'Режим: LOS';
-        } else if (rulerMode) {
-          text = 'Режим: Лінійка';
-        } else if (azimuthMode) {
-          text = 'Режим: Азимут';
-        } else if (heightMode) {
-          text = 'Режим: Висота';
-        }
-        if (!text) {
-          modeBadge.style.display = 'none';
-          return;
-        }
-        modeBadge.textContent = text;
-        modeBadge.style.display = 'block';
       }
 
       function buildCoverageLatLngs(lat, lon, azimuth, beamwidth, rangeKm) {
@@ -1054,14 +988,6 @@
         losMode = !!value;
         resetLosTemp();
         updateInstrumentStates();
-      }
-
-      function setHorizonMode(value) {
-        horizonMode = !!value;
-        if (!horizonMode) {
-          clearHorizonPoints();
-        }
-        updateInteractionBadge();
       }
 
       function resetLosTemp() {
@@ -1244,7 +1170,6 @@
       window.setLinkMode = setLinkMode;
       window.setHeightMode = setHeightMode;
       window.setLosMode = setLosMode;
-      window.setHorizonMode = setHorizonMode;
       window.setAzimuthMode = setAzimuthMode;
       window.setRulerMode = setRulerMode;
       window.addHorizonPoint = addHorizonPoint;

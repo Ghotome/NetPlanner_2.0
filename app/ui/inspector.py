@@ -1118,13 +1118,13 @@ class InspectorPanel(QWidget):
             self._site_lat_error.hide()
             self._site_lat_error.clear()
         else:
-            self._site_lat_error.setText("Діапазон -90…90.")
+            self._site_lat_error.setText("Очікується діапазон -90…90.")
             self._site_lat_error.show()
         if lon_valid or not lon_text:
             self._site_lon_error.hide()
             self._site_lon_error.clear()
         else:
-            self._site_lon_error.setText("Діапазон -180…180.")
+            self._site_lon_error.setText("Очікується діапазон -180…180.")
             self._site_lon_error.show()
 
         self._site_apply_basic.setEnabled(lat_valid and lon_valid and self._current_site_id is not None)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+from array import array
 from datetime import datetime
 import base64
 import json
@@ -14,7 +15,7 @@ from time import monotonic
 from pathlib import Path
 from dataclasses import replace
 from concurrent.futures import ThreadPoolExecutor
-from math import asin, atan2, ceil, cos, degrees, floor, log10, radians, sin, sqrt
+from math import asin, atan2, ceil, cos, degrees, floor, isfinite, log10, radians, sin, sqrt
 from uuid import uuid4
 from threading import Event
 from urllib.error import HTTPError, URLError
@@ -2614,6 +2615,36 @@ class MainWindow(QMainWindow):
             return
         stage = str(payload.get("stage") or "")
         queue = self._queue_suffix()
+        if stage == "dem_init":
+            total_rows = int(payload.get("total_rows") or 0)
+            self._coverage_progress_total_chunks = None
+            self._coverage_progress_done_chunks = 0
+            if total_rows > 0:
+                self._show_coverage_progress_widget(
+                    f"Покриття: завантаження висот... 0% (0/{total_rows} рядків){queue}",
+                    cancellable=True,
+                )
+            else:
+                self._show_coverage_progress_widget(
+                    f"Покриття: завантаження висот...{queue}",
+                    cancellable=True,
+                )
+            return
+        if stage == "dem":
+            total_rows = int(payload.get("total_rows") or 0)
+            done_rows = int(payload.get("done_rows") or 0)
+            if total_rows > 0:
+                percent = min(100, int(round((done_rows / total_rows) * 100)))
+                self._show_coverage_progress_widget(
+                    f"Покриття: завантаження висот... {percent}% ({done_rows}/{total_rows} рядків){queue}",
+                    cancellable=True,
+                )
+            else:
+                self._show_coverage_progress_widget(
+                    f"Покриття: завантаження висот... ({done_rows} рядків){queue}",
+                    cancellable=True,
+                )
+            return
         if stage == "raster_init":
             total_chunks = int(payload.get("total_chunks") or 0)
             self._coverage_progress_total_chunks = total_chunks if total_chunks > 0 else None
@@ -2772,7 +2803,7 @@ class MainWindow(QMainWindow):
         lon = site.location.lon
         cos_lat = cos(radians(lat))
         if abs(cos_lat) < 1e-6:
-            return None
+            return False
         lat_per_km = 1.0 / 110.574
         lon_per_km = 1.0 / (111.320 * cos_lat)
         max_extent_km = effective_range_km
@@ -2781,13 +2812,8 @@ class MainWindow(QMainWindow):
         if size <= 1:
             return False
         center = size // 2
-
         site_elev = site_elevation
-        if site_elev is None:
-            site_elev = self._elevation.get_elevation(lat, lon)
-        if site_elev is None:
-            return False
-        base_height = site_elev + (antenna.height_m or 0.0)
+
         rx_height_m = antenna.rx_height_m if antenna.rx_height_m is not None else 2.0
         if rx_height_m < 0:
             rx_height_m = 0.0
@@ -2798,8 +2824,6 @@ class MainWindow(QMainWindow):
         heading_y = cos(radians(azimuth))
         cos_half_bw = cos(radians(half_bw))
         base_fspl = 92.45 + (20.0 * log10(freq_ghz))
-        elev_cache: OrderedDict[tuple[float, float], float | None] = OrderedDict()
-        cache_limit = 20000
 
         x_km_list = [(i - center) * step_km for i in range(size)]
         y_km_list = [(center - j) * step_km for j in range(size)]
@@ -2865,19 +2889,39 @@ class MainWindow(QMainWindow):
                 step = max(0.1, distance_km / 2.0)
             return step
 
-        def elevation_cached(lat_q: float, lon_q: float) -> float | None:
-            key = (round(lat_q, 4), round(lon_q, 4))
-            if key in elev_cache:
-                elev_cache.move_to_end(key)
-                return elev_cache[key]
-            elev_val = self._elevation.get_elevation(lat_q, lon_q)
-            elev_cache[key] = elev_val
-            if len(elev_cache) > cache_limit:
-                elev_cache.popitem(last=False)
-            return elev_val
+        i_min, i_max, j_min, j_max = sector_bounds_xy()
+        dem_i0 = max(0, i_min - 1)
+        dem_i1 = min(size - 1, i_max + 1)
+        dem_j0 = max(0, j_min - 1)
+        dem_j1 = min(size - 1, j_max + 1)
+
+        dem_lat_values = lat_list[dem_j0 : dem_j1 + 1]
+        dem_lon_values = lon_list[dem_i0 : dem_i1 + 1]
+        dem_rows = self._build_dem_matrix(
+            dem_lat_values,
+            dem_lon_values,
+            cancel_event=cancel_event,
+            on_progress=on_progress,
+        )
+        if not dem_rows:
+            return False
+
+        if site_elev is None:
+            site_elev = self._dem_bilinear(dem_rows, center - dem_i0, center - dem_j0)
+        if site_elev is None:
+            site_elev = self._elevation.get_elevation(lat, lon)
+        if site_elev is None:
+            return False
+        base_height = site_elev + (antenna.height_m or 0.0)
+
+        def elev_local_xy(x_km: float, y_km: float) -> float | None:
+            global_i = (x_km / step_km) + center
+            global_j = center - (y_km / step_km)
+            local_i = global_i - dem_i0
+            local_j = global_j - dem_j0
+            return self._dem_bilinear(dem_rows, local_i, local_j)
 
         any_tiles = False
-        i_min, i_max, j_min, j_max = sector_bounds_xy()
 
         def compute_tile(tile_x: int, tile_y: int, tile_w: int, tile_h: int) -> dict | None:
             tile_pad = 2
@@ -2886,20 +2930,6 @@ class MainWindow(QMainWindow):
             image = Image.new("RGBA", (render_w, render_h), (0, 0, 0, 0))
             pixels = image.load()
             tile_has_samples = False
-            local_cache: dict[tuple[float, float], float | None] = {}
-
-            def elev_local(lat_q: float, lon_q: float) -> float | None:
-                key = (round(lat_q, 4), round(lon_q, 4))
-                if key in local_cache:
-                    return local_cache[key]
-                if key in elev_cache:
-                    val = elev_cache[key]
-                    elev_cache.move_to_end(key)
-                    local_cache[key] = val
-                    return val
-                val = elevation_cached(lat_q, lon_q)
-                local_cache[key] = val
-                return val
 
             for j in range(render_h):
                 if cancel_event is not None and cancel_event.is_set():
@@ -2910,7 +2940,6 @@ class MainWindow(QMainWindow):
                 if global_j < j_min or global_j > j_max:
                     continue
                 y_km = y_km_list[global_j]
-                lat_row = lat_list[global_j]
                 for i in range(render_w):
                     if cancel_event is not None and cancel_event.is_set():
                         return None
@@ -2928,8 +2957,7 @@ class MainWindow(QMainWindow):
                         along_beam = (x_km * heading_x) + (y_km * heading_y)
                         if along_beam < (dist_km * cos_half_bw):
                             continue
-                    lon_col = lon_list[global_i]
-                    target_elev = elev_local(lat_row, lon_col)
+                    target_elev = elev_local_xy(x_km, y_km)
                     if target_elev is None:
                         continue
                     env_loss = self._environment_loss_db(env_type, dist_km, freq_ghz)
@@ -2951,9 +2979,7 @@ class MainWindow(QMainWindow):
                         frac = d_km / dist_km
                         x_s = x_km * frac
                         y_s = y_km * frac
-                        lat_s = lat + (y_s * lat_per_km)
-                        lon_s = lon + (x_s * lon_per_km)
-                        elev_s = elev_local(lat_s, lon_s)
+                        elev_s = elev_local_xy(x_s, y_s)
                         if elev_s is None:
                             blocked = True
                             break
@@ -3279,6 +3305,78 @@ class MainWindow(QMainWindow):
             prev_dist_km = dist
         points.append([site.location.lat, site.location.lon])
         return points
+
+    def _build_dem_matrix(
+        self,
+        lat_values: list[float],
+        lon_values: list[float],
+        cancel_event: Event | None = None,
+        on_progress=None,
+    ) -> list[array] | None:
+        rows: list[array] = []
+        nan = float("nan")
+        total_rows = len(lat_values)
+        if on_progress is not None and total_rows > 0:
+            on_progress({"stage": "dem_init", "total_rows": total_rows, "done_rows": 0})
+        notify_step = max(1, total_rows // 50) if total_rows > 0 else 1
+        for lat_value in lat_values:
+            if cancel_event is not None and cancel_event.is_set():
+                return None
+            row = array("f")
+            for lon_value in lon_values:
+                if cancel_event is not None and cancel_event.is_set():
+                    return None
+                elev = self._elevation.get_elevation(lat_value, lon_value)
+                row.append(float(elev) if elev is not None else nan)
+            rows.append(row)
+            if on_progress is not None:
+                done_rows = len(rows)
+                if done_rows == total_rows or (done_rows % notify_step) == 0:
+                    on_progress(
+                        {
+                            "stage": "dem",
+                            "total_rows": total_rows,
+                            "done_rows": done_rows,
+                        }
+                    )
+        return rows
+
+    @staticmethod
+    def _dem_bilinear(rows: list[array], x_index: float, y_index: float) -> float | None:
+        if not rows:
+            return None
+        height = len(rows)
+        width = len(rows[0])
+        if width == 0:
+            return None
+        if x_index < 0 or y_index < 0 or x_index > (width - 1) or y_index > (height - 1):
+            return None
+
+        x0 = int(floor(x_index))
+        y0 = int(floor(y_index))
+        x1 = min(width - 1, x0 + 1)
+        y1 = min(height - 1, y0 + 1)
+
+        tx = x_index - x0
+        ty = y_index - y0
+
+        samples = (
+            (x0, y0, (1.0 - tx) * (1.0 - ty)),
+            (x1, y0, tx * (1.0 - ty)),
+            (x0, y1, (1.0 - tx) * ty),
+            (x1, y1, tx * ty),
+        )
+        total_weight = 0.0
+        total_value = 0.0
+        for sx, sy, weight in samples:
+            value = rows[sy][sx]
+            if not isfinite(value):
+                continue
+            total_weight += weight
+            total_value += value * weight
+        if total_weight <= 0.0:
+            return None
+        return total_value / total_weight
 
     @staticmethod
     def _destination_point(lat: float, lon: float, bearing: float, distance_km: float) -> tuple[float, float]:

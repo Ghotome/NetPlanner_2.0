@@ -25,11 +25,13 @@ from PySide6.QtCore import QPoint, Qt, QTimer, Signal, QUrl
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
+    QHBoxLayout,
     QInputDialog,
     QLabel,
     QMainWindow,
     QMenu,
     QMessageBox,
+    QPushButton,
     QSplitter,
     QToolTip,
     QTreeWidgetItem,
@@ -71,6 +73,7 @@ class MainWindow(QMainWindow):
     prefetch_finished = Signal(int)
     coverage_result_ready = Signal(str, int, object)
     coverage_tile_ready = Signal(str, int, object)
+    coverage_progress_ready = Signal(str, int, object)
     coverage_job_finished = Signal(str, int)
 
     def __init__(self, project: NetworkProject, parent: QWidget | None = None) -> None:
@@ -141,6 +144,7 @@ class MainWindow(QMainWindow):
         self.prefetch_finished.connect(self._finish_prefetch)
         self.coverage_result_ready.connect(self._apply_coverage_result)
         self.coverage_tile_ready.connect(self._apply_coverage_tile)
+        self.coverage_progress_ready.connect(self._apply_coverage_progress)
         self.coverage_job_finished.connect(self._on_coverage_job_finished)
         self._prefetch_timer = QTimer(self)
         self._prefetch_timer.setSingleShot(True)
@@ -228,6 +232,18 @@ class MainWindow(QMainWindow):
         self._hint_overlay_timer.timeout.connect(self._on_hint_overlay_timeout)
         self._hint_overlay_persistent_text: str | None = None
         self._busy_overlay_text: str | None = None
+        self._coverage_progress_job: tuple[str, int] | None = None
+        self._coverage_progress_total_chunks: int | None = None
+        self._coverage_progress_done_chunks = 0
+        self._coverage_cancelled_jobs: set[tuple[str, int]] = set()
+        self._coverage_progress_hide_timer = QTimer(self)
+        self._coverage_progress_hide_timer.setSingleShot(True)
+        self._coverage_progress_hide_timer.timeout.connect(self._hide_coverage_progress_widget)
+        self._coverage_progress_widget = QWidget(self)
+        self._coverage_progress_label = QLabel("", self._coverage_progress_widget)
+        self._coverage_cancel_button = QPushButton("Скасувати", self._coverage_progress_widget)
+        self._coverage_cancel_button.clicked.connect(self._cancel_coverage_from_ui)
+        self._init_coverage_progress_widget()
         self._empty_project_overlay_text = "Створіть перший сайт для початку роботи або завантажте проєкт"
         self._sync_empty_project_state(show_overlay=True)
 
@@ -415,6 +431,68 @@ class MainWindow(QMainWindow):
             }}
             """
         )
+
+    def _init_coverage_progress_widget(self) -> None:
+        layout = QHBoxLayout(self._coverage_progress_widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        self._coverage_progress_label.setMinimumWidth(290)
+        self._coverage_cancel_button.setMinimumWidth(96)
+        self._coverage_cancel_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        layout.addWidget(self._coverage_progress_label, 1)
+        layout.addWidget(self._coverage_cancel_button, 0)
+        self._coverage_progress_widget.hide()
+        self.statusBar().addPermanentWidget(self._coverage_progress_widget)
+
+    def _hide_coverage_progress_widget(self) -> None:
+        self._coverage_progress_widget.hide()
+        self._coverage_progress_label.clear()
+
+    def _queue_suffix(self) -> str:
+        queued = len(self._coverage_pending_jobs)
+        if queued <= 0:
+            return ""
+        return f" | черга: {queued}"
+
+    def _show_coverage_progress_widget(self, text: str, *, cancellable: bool = True, auto_hide_ms: int = 0) -> None:
+        self._coverage_progress_hide_timer.stop()
+        self._coverage_progress_label.setText(text)
+        self._coverage_cancel_button.setVisible(cancellable)
+        self._coverage_cancel_button.setEnabled(cancellable)
+        self._coverage_progress_widget.show()
+        if auto_hide_ms > 0:
+            self._coverage_progress_hide_timer.start(auto_hide_ms)
+
+    def _start_coverage_progress(
+        self,
+        coverage_id: str,
+        job_id: int,
+        site_name: str,
+        antenna_name: str,
+    ) -> None:
+        self._coverage_progress_job = (coverage_id, job_id)
+        self._coverage_progress_total_chunks = None
+        self._coverage_progress_done_chunks = 0
+        text = f"Покриття: старт ({site_name} / {antenna_name}){self._queue_suffix()}"
+        self._show_coverage_progress_widget(text, cancellable=True)
+
+    def _finish_coverage_progress(self, coverage_id: str, job_id: int, state: str) -> None:
+        if self._coverage_progress_job != (coverage_id, job_id):
+            return
+        self._coverage_progress_job = None
+        self._coverage_progress_total_chunks = None
+        self._coverage_progress_done_chunks = 0
+        self._show_coverage_progress_widget(f"Покриття: {state}", cancellable=False, auto_hide_ms=1700)
+
+    def _cancel_coverage_from_ui(self) -> None:
+        if self._coverage_active_job is None and not self._coverage_pending_jobs:
+            return
+        self._cancel_all_coverage_jobs(clear_assignments=False)
+        self._set_busy(None)
+        self._coverage_progress_job = None
+        self._coverage_progress_total_chunks = None
+        self._coverage_progress_done_chunks = 0
+        self._show_coverage_progress_widget("Покриття: скасовано", cancellable=False, auto_hide_ms=1700)
 
     def _position_hint_overlay(self) -> None:
         self._hint_overlay_label.adjustSize()
@@ -1595,6 +1673,12 @@ class MainWindow(QMainWindow):
         if self._coverage_job_for_key.get(coverage_id) != job_id:
             return False
         self._coverage_active_job = (coverage_id, job_id)
+        self._start_coverage_progress(
+            coverage_id,
+            job_id,
+            site_snapshot.name,
+            antenna_snapshot.name or "Антена",
+        )
         self._set_busy("Розрахунок покриття…")
         future = self._bg_executor.submit(
             self._compute_coverage_data,
@@ -1610,11 +1694,14 @@ class MainWindow(QMainWindow):
         return True
 
     def _cancel_coverage_job(self, coverage_id: str, clear_assignment: bool) -> None:
+        if self._coverage_active_job and self._coverage_active_job[0] == coverage_id:
+            self._coverage_cancelled_jobs.add(self._coverage_active_job)
         cancel_event = self._coverage_cancel_event_for_key.pop(coverage_id, None)
         if cancel_event is not None:
             cancel_event.set()
         pending_job = self._coverage_pending_jobs.pop(coverage_id, None)
         if pending_job is not None:
+            self._coverage_cancelled_jobs.add((coverage_id, pending_job[5]))
             pending_event = pending_job[6]
             pending_event.set()
         self._drop_coverage_tile_queue(coverage_id)
@@ -1622,7 +1709,10 @@ class MainWindow(QMainWindow):
             self._coverage_job_for_key.pop(coverage_id, None)
 
     def _cancel_all_coverage_jobs(self, clear_assignments: bool) -> None:
+        if self._coverage_active_job is not None:
+            self._coverage_cancelled_jobs.add(self._coverage_active_job)
         for pending_job in self._coverage_pending_jobs.values():
+            self._coverage_cancelled_jobs.add((pending_job[4], pending_job[5]))
             pending_job[6].set()
         self._coverage_pending_jobs.clear()
         for cancel_event in self._coverage_cancel_event_for_key.values():
@@ -1630,6 +1720,11 @@ class MainWindow(QMainWindow):
         self._coverage_cancel_event_for_key.clear()
         self._clear_coverage_tile_queues()
         self._coverage_active_job = None
+        self._coverage_progress_job = None
+        self._coverage_progress_total_chunks = None
+        self._coverage_progress_done_chunks = 0
+        self._coverage_progress_hide_timer.stop()
+        self._hide_coverage_progress_widget()
         if clear_assignments:
             self._coverage_job_for_key.clear()
 
@@ -2332,8 +2427,10 @@ class MainWindow(QMainWindow):
         if horizon_limit_km is not None:
             range_km = min(range_km, horizon_limit_km)
         tile_callback = None
+        progress_callback = None
         if coverage_id and job_id:
             tile_callback = lambda tile: self.coverage_tile_ready.emit(coverage_id, job_id, tile)
+            progress_callback = lambda payload: self.coverage_progress_ready.emit(coverage_id, job_id, payload)
         env_type = site.metadata.get("environment") or self._project.metadata.get("environment") or "mixed"
         raster_ok = self._coverage_raster_tiles(
             site,
@@ -2347,6 +2444,7 @@ class MainWindow(QMainWindow):
             tile_size=64,
             env_type=env_type,
             on_tile=tile_callback,
+            on_progress=progress_callback,
             cancel_event=cancel_event,
         )
         if raster_ok:
@@ -2417,28 +2515,40 @@ class MainWindow(QMainWindow):
 
     def _apply_coverage_result(self, coverage_id: str, job_id: int, result) -> None:
         if self._coverage_job_for_key.get(coverage_id) != job_id:
+            self._coverage_cancelled_jobs.discard((coverage_id, job_id))
             self._set_busy(None)
             return
         site_id = coverage_id.split(":", 1)[0]
         antenna_id = coverage_id.split(":", 1)[1] if ":" in coverage_id else ""
         site = self._project.sites.get(site_id)
         if site is None:
+            self._finish_coverage_progress(coverage_id, job_id, "скасовано")
+            self._coverage_cancelled_jobs.discard((coverage_id, job_id))
             self._set_busy(None)
             return
         antenna = next((a for a in site.antennas if a.id == antenna_id and a.applied), None)
         if antenna is None:
             self._drop_coverage_tile_queue(coverage_id)
             self.map_view.remove_coverage(coverage_id)
+            self._finish_coverage_progress(coverage_id, job_id, "скасовано")
+            self._coverage_cancelled_jobs.discard((coverage_id, job_id))
             self._set_busy(None)
             return
         if result is None:
             self._drop_coverage_tile_queue(coverage_id)
             self.map_view.remove_coverage(coverage_id)
+            if (coverage_id, job_id) in self._coverage_cancelled_jobs:
+                self._finish_coverage_progress(coverage_id, job_id, "скасовано")
+            else:
+                self._finish_coverage_progress(coverage_id, job_id, "помилка")
+            self._coverage_cancelled_jobs.discard((coverage_id, job_id))
             self._set_busy(None)
             return
         mode = result.get("mode")
         if mode == "raster_done":
             self._flush_coverage_tiles(force_coverage_id=coverage_id)
+            self._finish_coverage_progress(coverage_id, job_id, "готово")
+            self._coverage_cancelled_jobs.discard((coverage_id, job_id))
             self._set_busy(None)
             return
         self._drop_coverage_tile_queue(coverage_id)
@@ -2457,7 +2567,47 @@ class MainWindow(QMainWindow):
                 result["color"],
                 result["tooltip"],
             )
+        self._finish_coverage_progress(coverage_id, job_id, "готово")
+        self._coverage_cancelled_jobs.discard((coverage_id, job_id))
         self._set_busy(None)
+
+    def _apply_coverage_progress(self, coverage_id: str, job_id: int, payload: dict) -> None:
+        if self._coverage_progress_job != (coverage_id, job_id):
+            return
+        if not payload:
+            return
+        stage = str(payload.get("stage") or "")
+        queue = self._queue_suffix()
+        if stage == "raster_init":
+            total_chunks = int(payload.get("total_chunks") or 0)
+            self._coverage_progress_total_chunks = total_chunks if total_chunks > 0 else None
+            self._coverage_progress_done_chunks = 0
+            if self._coverage_progress_total_chunks:
+                self._show_coverage_progress_widget(
+                    f"Покриття: йде 0% (0/{self._coverage_progress_total_chunks} чанків){queue}",
+                    cancellable=True,
+                )
+            else:
+                self._show_coverage_progress_widget(f"Покриття: йде{queue}", cancellable=True)
+            return
+        if stage != "raster":
+            return
+        total_chunks = int(payload.get("total_chunks") or 0)
+        done_chunks = int(payload.get("done_chunks") or 0)
+        if total_chunks > 0:
+            self._coverage_progress_total_chunks = total_chunks
+        if done_chunks >= 0:
+            self._coverage_progress_done_chunks = done_chunks
+        total = self._coverage_progress_total_chunks
+        done = self._coverage_progress_done_chunks
+        if total and total > 0:
+            percent = min(100, int(round((done / total) * 100)))
+            self._show_coverage_progress_widget(
+                f"Покриття: йде {percent}% ({done}/{total} чанків){queue}",
+                cancellable=True,
+            )
+            return
+        self._show_coverage_progress_widget(f"Покриття: йде ({done} чанків){queue}", cancellable=True)
 
     def _apply_coverage_tile(self, coverage_id: str, job_id: int, tile: dict) -> None:
         if self._coverage_job_for_key.get(coverage_id) != job_id:
@@ -2555,6 +2705,7 @@ class MainWindow(QMainWindow):
         tile_size: int = 64,
         env_type: str = "mixed",
         on_tile=None,
+        on_progress=None,
         cancel_event: Event | None = None,
     ) -> bool:
         if cancel_event is not None and cancel_event.is_set():
@@ -2830,10 +2981,24 @@ class MainWindow(QMainWindow):
         if not tiles:
             return False
 
+        total_chunks = len(tiles)
+        processed_chunks = 0
+        if on_progress is not None:
+            on_progress({"stage": "raster_init", "total_chunks": total_chunks, "done_chunks": 0})
+
         for tile_x, tile_y, tile_w, tile_h in tiles:
             if cancel_event is not None and cancel_event.is_set():
                 return False
             result = compute_tile(tile_x, tile_y, tile_w, tile_h)
+            processed_chunks += 1
+            if on_progress is not None:
+                on_progress(
+                    {
+                        "stage": "raster",
+                        "total_chunks": total_chunks,
+                        "done_chunks": processed_chunks,
+                    }
+                )
             if result is None:
                 continue
             any_tiles = True

@@ -380,6 +380,9 @@ class MapView(QWebEngineView):
         results_json = json.dumps(results, ensure_ascii=False)
         self.page().runJavaScript(f"showSearchResults({results_json});")
 
+    def focus_search(self, select_all: bool = True) -> None:
+        self.page().runJavaScript(f"focusSearchInput({str(select_all).lower()});")
+
     def update_link_meta(
         self, link_id: str, label: str, kind: str, info: str, distance_km: float | None
     ) -> None:

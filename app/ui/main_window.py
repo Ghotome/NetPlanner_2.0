@@ -220,6 +220,9 @@ class MainWindow(QMainWindow):
         self._rename_tree_shortcut.activated.connect(self._rename_selected)
         self._undo_tree_shortcut = QShortcut(QKeySequence.Undo, self)
         self._undo_tree_shortcut.activated.connect(self._undo_last_deleted_tree_device)
+        self._map_search_shortcut = QShortcut(QKeySequence.Find, self)
+        self._map_search_shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
+        self._map_search_shortcut.activated.connect(self._focus_map_search)
         self._escape_modes_shortcut = QShortcut(QKeySequence("Esc"), self)
         self._escape_modes_shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
         self._escape_modes_shortcut.activated.connect(self._handle_escape_modes)
@@ -1050,6 +1053,10 @@ class MainWindow(QMainWindow):
         dialog.exec()
         self.map_view.set_horizon_mode(False)
         self.map_view.clear_horizon_points()
+
+    def _focus_map_search(self) -> None:
+        self.map_view.setFocus()
+        self.map_view.focus_search(select_all=True)
 
     def _deactivate_interaction_modes(self, except_mode: str | None = None) -> None:
         if except_mode != "height" and self._height_action.isChecked():

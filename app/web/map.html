@@ -246,6 +246,44 @@
         color: #fca5a5;
         display: none;
       }
+      .map-shortcuts-overlay {
+        position: absolute;
+        right: 12px;
+        top: 72px;
+        z-index: 2200;
+        width: min(320px, calc(100% - 24px));
+        background: var(--panel-bg);
+        border: 1px solid var(--panel-border);
+        border-radius: 10px;
+        box-shadow: var(--panel-shadow);
+        padding: 10px 12px;
+        color: #f8fafc;
+        display: none;
+      }
+      .map-shortcuts-title {
+        font-size: 13px;
+        font-weight: 700;
+        margin-bottom: 6px;
+      }
+      .map-shortcuts-item {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        font-size: 12px;
+        padding: 3px 0;
+      }
+      .map-shortcuts-key {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        border: 1px solid rgba(255,255,255,0.28);
+        border-radius: 6px;
+        padding: 1px 6px;
+        white-space: nowrap;
+      }
+      .map-shortcuts-note {
+        margin-top: 8px;
+        font-size: 11px;
+        opacity: 0.85;
+      }
       @media (prefers-color-scheme: light) {
         .tool-submenu-title { color: #0f1720; }
         .tool-submenu-item { color: #0f1720; border-color: rgba(15,23,32,0.2); }
@@ -260,6 +298,8 @@
         .map-search-empty { color: #0f1720; }
         .map-search-feedback { color: #b91c1c; }
         .map-search-input::placeholder { color: rgba(15,23,32,0.55); }
+        .map-shortcuts-overlay { color: #0f1720; }
+        .map-shortcuts-key { border-color: rgba(15,23,32,0.2); }
       }
     </style>
   </head>
@@ -318,6 +358,21 @@
         <div id="map-search-results" class="map-search-results"></div>
       `;
       L.DomEvent.disableClickPropagation(searchContainer);
+
+      const shortcutsOverlay = L.DomUtil.create('div', 'map-shortcuts-overlay', map.getContainer());
+      shortcutsOverlay.id = 'map-shortcuts-overlay';
+      shortcutsOverlay.innerHTML = `
+        <div class="map-shortcuts-title">Гарячі клавіші</div>
+        <div class="map-shortcuts-item"><span>/</span><span class="map-shortcuts-key">Пошук</span></div>
+        <div class="map-shortcuts-item"><span>Ctrl+F</span><span class="map-shortcuts-key">Пошук</span></div>
+        <div class="map-shortcuts-item"><span>A</span><span class="map-shortcuts-key">Азимут</span></div>
+        <div class="map-shortcuts-item"><span>R</span><span class="map-shortcuts-key">Лінійка</span></div>
+        <div class="map-shortcuts-item"><span>L</span><span class="map-shortcuts-key">LOS</span></div>
+        <div class="map-shortcuts-item"><span>H</span><span class="map-shortcuts-key">Висота</span></div>
+        <div class="map-shortcuts-item"><span>Esc</span><span class="map-shortcuts-key">Вимкнути режими</span></div>
+        <div class="map-shortcuts-item"><span>?</span><span class="map-shortcuts-key">Ця довідка</span></div>
+      `;
+      L.DomEvent.disableClickPropagation(shortcutsOverlay);
 
       map.createPane('coveragePane');
       map.getPane('coveragePane').style.zIndex = 250;
@@ -500,6 +555,51 @@
         });
       }
 
+      function focusSearchInput(selectAll) {
+        const input = document.getElementById('map-search-input');
+        if (!input) { return; }
+        input.focus({ preventScroll: true });
+        if (selectAll) {
+          input.select();
+        }
+        setShortcutsOverlayVisible(false);
+      }
+
+      function setShortcutsOverlayVisible(visible) {
+        if (!shortcutsOverlay) { return; }
+        shortcutsOverlay.style.display = visible ? 'block' : 'none';
+      }
+
+      function toggleShortcutsOverlay() {
+        if (!shortcutsOverlay) { return; }
+        const isVisible = shortcutsOverlay.style.display === 'block';
+        setShortcutsOverlayVisible(!isVisible);
+      }
+
+      function isTextInputTarget(target) {
+        if (!target) { return false; }
+        const tag = (target.tagName || '').toUpperCase();
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') {
+          return true;
+        }
+        return !!target.isContentEditable;
+      }
+
+      function triggerToolShortcut(code) {
+        const shortcutMap = {
+          KeyA: 'tool-azimuth',
+          KeyR: 'tool-ruler',
+          KeyL: 'tool-los',
+          KeyH: 'tool-height',
+        };
+        const buttonId = shortcutMap[code];
+        if (!buttonId) { return false; }
+        const button = document.getElementById(buttonId);
+        if (!button) { return false; }
+        button.click();
+        return true;
+      }
+
       function bindSearchControls() {
         const input = document.getElementById('map-search-input');
         const runBtn = document.getElementById('map-search-run');
@@ -561,6 +661,65 @@
           });
         }
         syncSearchSourceChips();
+      }
+
+      function bindKeyboardShortcuts() {
+        document.addEventListener('keydown', (evt) => {
+          const code = evt.code || '';
+          const isCtrlF = (evt.ctrlKey || evt.metaKey) && code === 'KeyF';
+          const isSlash = code === 'Slash' && !evt.shiftKey && !evt.altKey && !evt.ctrlKey && !evt.metaKey;
+          const isQuestion = code === 'Slash' && evt.shiftKey && !evt.altKey && !evt.ctrlKey && !evt.metaKey;
+          const isEsc = evt.key === 'Escape';
+          const typing = isTextInputTarget(evt.target);
+
+          if (isCtrlF) {
+            evt.preventDefault();
+            focusSearchInput(true);
+            return;
+          }
+
+          if (isQuestion && !typing) {
+            evt.preventDefault();
+            toggleShortcutsOverlay();
+            return;
+          }
+
+          if (isSlash && !typing) {
+            evt.preventDefault();
+            focusSearchInput(true);
+            return;
+          }
+
+          if (typing) {
+            return;
+          }
+
+          if (isEsc) {
+            if (shortcutsOverlay && shortcutsOverlay.style.display === 'block') {
+              evt.preventDefault();
+              setShortcutsOverlayVisible(false);
+              return;
+            }
+            const resultsEl = document.getElementById('map-search-results');
+            const feedbackEl = document.getElementById('map-search-feedback');
+            const hasVisibleResults = !!resultsEl && resultsEl.style.display === 'block';
+            const hasFeedback = !!feedbackEl && feedbackEl.style.display === 'block';
+            if (hasVisibleResults || hasFeedback) {
+              evt.preventDefault();
+              clearSearchUI(false);
+              return;
+            }
+            return;
+          }
+
+          if (evt.repeat) {
+            return;
+          }
+
+          if (triggerToolShortcut(code)) {
+            evt.preventDefault();
+          }
+        });
       }
 
       function clearSearchUI(clearInput) {
@@ -760,6 +919,7 @@
 
       map.on('click', () => {
         hideCalculatorsMenu();
+        setShortcutsOverlayVisible(false);
       });
 
       function siteIconUrl(kind, status) {
@@ -1340,8 +1500,9 @@
       };
       window.requestElevationPrefetch = requestElevationPrefetch;
       window.showSearchResults = showSearchResults;
+      window.focusSearchInput = focusSearchInput;
 
-      ensureBridgeReady(() => { bindToolButtons(); bindSearchControls(); });
+      ensureBridgeReady(() => { bindToolButtons(); bindSearchControls(); bindKeyboardShortcuts(); });
 
       function bearingDeg(a, b) {
         const lat1 = a.lat * Math.PI / 180;

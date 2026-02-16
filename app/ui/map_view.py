@@ -350,6 +350,9 @@ class MapView(QWebEngineView):
     def set_los_mode(self, enabled: bool) -> None:
         self.page().runJavaScript(f"setLosMode({str(enabled).lower()});")
 
+    def set_horizon_mode(self, enabled: bool) -> None:
+        self.page().runJavaScript(f"setHorizonMode({str(enabled).lower()});")
+
     def set_azimuth_mode(self, enabled: bool) -> None:
         self.page().runJavaScript(f"setAzimuthMode({str(enabled).lower()});")
 

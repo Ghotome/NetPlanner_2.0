@@ -222,6 +222,21 @@
         color: #f8fafc;
         padding: 6px 4px;
       }
+      .mode-badge {
+        position: absolute;
+        left: 52px;
+        top: 70px;
+        z-index: 2100;
+        display: none;
+        background: rgba(14, 165, 233, 0.88);
+        color: #f8fafc;
+        border: 1px solid rgba(255,255,255,0.32);
+        border-radius: 999px;
+        padding: 6px 10px;
+        font-size: 12px;
+        font-weight: 700;
+        box-shadow: 0 8px 16px rgba(0,0,0,0.35);
+      }
       @media (prefers-color-scheme: light) {
         .tool-submenu-title { color: #0f1720; }
         .tool-submenu-item { color: #0f1720; border-color: rgba(15,23,32,0.2); }
@@ -233,6 +248,11 @@
         }
         .map-search-empty { color: #0f1720; }
         .map-search-input::placeholder { color: rgba(15,23,32,0.55); }
+        .mode-badge {
+          color: #0f1720;
+          border-color: rgba(15,23,32,0.2);
+          background: rgba(56, 189, 248, 0.85);
+        }
       }
     </style>
   </head>
@@ -250,24 +270,7 @@
         'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png',
         { maxZoom: 15, opacity: 0.65, className: 'elevation-tiles' }
       );
-      const elevationLegend = L.control({ position: 'bottomleft' });
-      elevationLegend.onAdd = function () {
-        const div = L.DomUtil.create('div', 'elevation-legend');
-        div.innerHTML = `
-          <div class="legend-title">Висота (м)</div>
-          <div class="legend-bar"></div>
-          <div class="legend-labels">
-            <span>0 м</span>
-            <span>500 м</span>
-            <span>1000 м</span>
-            <span>2000 м</span>
-            <span>3000 м</span>
-            <span>4000+ м</span>
-          </div>
-        `;
-        return div;
-      };
-
+      
       const toolsControl = L.control({ position: 'bottomleft' });
       toolsControl.onAdd = function () {
         const div = L.DomUtil.create('div', 'map-tools');
@@ -301,6 +304,9 @@
         <div id="map-search-results" class="map-search-results"></div>
       `;
       L.DomEvent.disableClickPropagation(searchContainer);
+
+      const modeBadge = L.DomUtil.create('div', 'mode-badge', map.getContainer());
+      modeBadge.textContent = '';
 
       map.createPane('coveragePane');
       map.getPane('coveragePane').style.zIndex = 250;
@@ -344,6 +350,7 @@
       let hoverTargetId = null;
       let calculatorsMenu = null;
       let searchPin = null;
+      let horizonMode = false;
 
       function ensureCalculatorsMenu() {
         if (calculatorsMenu) { return; }
@@ -887,6 +894,28 @@
         if (a) { a.classList.toggle('active', azimuthMode); }
         if (r) { r.classList.toggle('active', rulerMode); }
         if (l) { l.classList.toggle('active', losMode); }
+        updateInteractionBadge();
+      }
+
+      function updateInteractionBadge() {
+        let text = '';
+        if (horizonMode) {
+          text = 'Режим: Горизонт';
+        } else if (losMode) {
+          text = 'Режим: LOS';
+        } else if (rulerMode) {
+          text = 'Режим: Лінійка';
+        } else if (azimuthMode) {
+          text = 'Режим: Азимут';
+        } else if (heightMode) {
+          text = 'Режим: Висота';
+        }
+        if (!text) {
+          modeBadge.style.display = 'none';
+          return;
+        }
+        modeBadge.textContent = text;
+        modeBadge.style.display = 'block';
       }
 
       function buildCoverageLatLngs(lat, lon, azimuth, beamwidth, rangeKm) {
@@ -1025,6 +1054,14 @@
         losMode = !!value;
         resetLosTemp();
         updateInstrumentStates();
+      }
+
+      function setHorizonMode(value) {
+        horizonMode = !!value;
+        if (!horizonMode) {
+          clearHorizonPoints();
+        }
+        updateInteractionBadge();
       }
 
       function resetLosTemp() {
@@ -1207,6 +1244,7 @@
       window.setLinkMode = setLinkMode;
       window.setHeightMode = setHeightMode;
       window.setLosMode = setLosMode;
+      window.setHorizonMode = setHorizonMode;
       window.setAzimuthMode = setAzimuthMode;
       window.setRulerMode = setRulerMode;
       window.addHorizonPoint = addHorizonPoint;

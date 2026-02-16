@@ -311,6 +311,8 @@ class MainWindow(QMainWindow):
         self._coverage_refresh_timer.start(120)
 
     def _toggle_height_mode(self, enabled: bool) -> None:
+        if enabled:
+            self._deactivate_interaction_modes(except_mode="height")
         self._height_mode = enabled
         self._pending_height = None
         self.map_view.set_height_mode(enabled)
@@ -321,17 +323,8 @@ class MainWindow(QMainWindow):
             self._show_hint_overlay("Наведіть курсор на точку на мапі для заміру висоти.", persistent=True)
 
     def _toggle_azimuth_mode(self, enabled: bool) -> None:
-        if enabled and self._height_action.isChecked():
-            self._height_action.setChecked(False)
-        if enabled and self._los_mode:
-            self._los_mode = False
-            self._los_points = []
-            self.map_view.set_los_mode(False)
-            if self._los_action.isChecked():
-                self._los_action.setChecked(False)
-            self._clear_hint_overlay()
-        if enabled and self._ruler_action.isChecked():
-            self._ruler_action.setChecked(False)
+        if enabled:
+            self._deactivate_interaction_modes(except_mode="azimuth")
         self.map_view.set_azimuth_mode(enabled)
         if enabled:
             self._show_hint_overlay(
@@ -342,17 +335,8 @@ class MainWindow(QMainWindow):
             self._clear_hint_overlay()
 
     def _toggle_ruler_mode(self, enabled: bool) -> None:
-        if enabled and self._height_action.isChecked():
-            self._height_action.setChecked(False)
-        if enabled and self._los_mode:
-            self._los_mode = False
-            self._los_points = []
-            self.map_view.set_los_mode(False)
-            if self._los_action.isChecked():
-                self._los_action.setChecked(False)
-            self._clear_hint_overlay()
-        if enabled and self._azimuth_action.isChecked():
-            self._azimuth_action.setChecked(False)
+        if enabled:
+            self._deactivate_interaction_modes(except_mode="ruler")
         self.map_view.set_ruler_mode(enabled)
         if enabled:
             self._show_hint_overlay(
@@ -694,6 +678,7 @@ class MainWindow(QMainWindow):
 
     def _toggle_los_mode(self, enabled: bool) -> None:
         if enabled:
+            self._deactivate_interaction_modes(except_mode="los")
             QMessageBox.information(
                 self,
                 "LOS",
@@ -710,6 +695,7 @@ class MainWindow(QMainWindow):
             self._clear_hint_overlay()
 
     def _open_horizon_calculator(self) -> None:
+        self._deactivate_interaction_modes(except_mode="horizon")
         QMessageBox.information(
             self,
             "Горизонт",
@@ -719,6 +705,7 @@ class MainWindow(QMainWindow):
         )
         self._horizon_mode = True
         self._horizon_points = []
+        self.map_view.set_horizon_mode(True)
         self.map_view.clear_horizon_points()
         self._show_hint_overlay("Горизонт: оберіть 2 точки на мапі", persistent=True)
 
@@ -903,6 +890,7 @@ class MainWindow(QMainWindow):
             a, b = self._horizon_points
             self._horizon_mode = False
             self._horizon_points = []
+            self.map_view.set_horizon_mode(False)
             self._clear_hint_overlay()
             self._open_horizon_dialog(a, b)
             return
@@ -925,6 +913,7 @@ class MainWindow(QMainWindow):
     def _open_horizon_dialog(self, a: tuple[float, float], b: tuple[float, float]) -> None:
         if not self._elevation.available:
             QMessageBox.warning(self, "Горизонт", "Немає даних висот (Pillow?)")
+            self.map_view.set_horizon_mode(False)
             self.map_view.clear_horizon_points()
             return
         lat1, lon1 = a
@@ -933,6 +922,7 @@ class MainWindow(QMainWindow):
         elev_b = self._elevation.get_elevation(lat2, lon2)
         if elev_a is None or elev_b is None:
             QMessageBox.warning(self, "Горизонт", "Немає даних висот для обраних точок")
+            self.map_view.set_horizon_mode(False)
             self.map_view.clear_horizon_points()
             return
         distance_km = self._distance_km(lat1, lon1, lat2, lon2)
@@ -946,6 +936,7 @@ class MainWindow(QMainWindow):
             elev = self._elevation.get_elevation(lat, lon)
             if elev is None:
                 QMessageBox.warning(self, "Горизонт", "Немає даних висот для траси")
+                self.map_view.set_horizon_mode(False)
                 self.map_view.clear_horizon_points()
                 return
             profile_elevations.append(elev)
@@ -959,7 +950,44 @@ class MainWindow(QMainWindow):
             parent=self,
         )
         dialog.exec()
+        self.map_view.set_horizon_mode(False)
         self.map_view.clear_horizon_points()
+
+    def _deactivate_interaction_modes(self, except_mode: str | None = None) -> None:
+        if except_mode != "height" and self._height_action.isChecked():
+            self._height_action.setChecked(False)
+        if except_mode != "azimuth" and self._azimuth_action.isChecked():
+            self._azimuth_action.setChecked(False)
+        if except_mode != "ruler" and self._ruler_action.isChecked():
+            self._ruler_action.setChecked(False)
+        if except_mode != "los" and self._los_action.isChecked():
+            self._los_action.setChecked(False)
+        if except_mode != "los" and self._los_mode:
+            self._los_mode = False
+            self._los_points = []
+            self.map_view.set_los_mode(False)
+        if except_mode != "horizon" and self._horizon_mode:
+            self._horizon_mode = False
+            self._horizon_points = []
+            self.map_view.set_horizon_mode(False)
+            self.map_view.clear_horizon_points()
+
+    def keyPressEvent(self, event):  # noqa: N802
+        if event.key() == Qt.Key.Key_Escape:
+            active = (
+                self._height_action.isChecked()
+                or self._azimuth_action.isChecked()
+                or self._ruler_action.isChecked()
+                or self._los_action.isChecked()
+                or self._horizon_mode
+            )
+            if active:
+                self._deactivate_interaction_modes()
+                self._clear_hint_overlay()
+                self._show_hint_overlay("Режими інструментів вимкнено", duration_ms=1200)
+                event.accept()
+                return
+        super().keyPressEvent(event)
 
     def _run_los_between_points(self, a: tuple[float, float], b: tuple[float, float]) -> None:
         if not self._elevation.available:

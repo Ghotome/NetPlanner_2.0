@@ -34,7 +34,7 @@ class MapBridge(QObject):
         on_open_horizon: Callable[[], None],
         on_open_power: Callable[[], None],
         on_open_frequency: Callable[[], None],
-        on_search_map: Callable[[str], None],
+        on_search_map: Callable[[str, list[str] | None], None],
     ) -> None:
         super().__init__()
         self._on_show_context_menu = on_show_context_menu
@@ -136,7 +136,18 @@ class MapBridge(QObject):
 
     @Slot(str)
     def searchMap(self, query: str) -> None:
-        self._on_search_map(query)
+        self._on_search_map(query, None)
+
+    @Slot(str, str)
+    def searchMapWithSources(self, query: str, sources_json: str) -> None:
+        sources: list[str] | None = None
+        try:
+            parsed = json.loads(sources_json) if sources_json else None
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, list):
+            sources = [str(item).strip().lower() for item in parsed if str(item).strip()]
+        self._on_search_map(query, sources)
 
     @Slot(float, float, float, float, int)
     def prefetchElevation(
@@ -177,7 +188,7 @@ class MapView(QWebEngineView):
         on_open_horizon: Callable[[], None],
         on_open_power: Callable[[], None],
         on_open_frequency: Callable[[], None],
-        on_search_map: Callable[[str], None],
+        on_search_map: Callable[[str, list[str] | None], None],
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -350,6 +361,9 @@ class MapView(QWebEngineView):
     def set_los_mode(self, enabled: bool) -> None:
         self.page().runJavaScript(f"setLosMode({str(enabled).lower()});")
 
+    def set_horizon_mode(self, enabled: bool) -> None:
+        self.page().runJavaScript(f"setHorizonMode({str(enabled).lower()});")
+
     def set_azimuth_mode(self, enabled: bool) -> None:
         self.page().runJavaScript(f"setAzimuthMode({str(enabled).lower()});")
 
@@ -365,6 +379,9 @@ class MapView(QWebEngineView):
     def show_search_results(self, results: list[dict]) -> None:
         results_json = json.dumps(results, ensure_ascii=False)
         self.page().runJavaScript(f"showSearchResults({results_json});")
+
+    def focus_search(self, select_all: bool = True) -> None:
+        self.page().runJavaScript(f"focusSearchInput({str(select_all).lower()});")
 
     def update_link_meta(
         self, link_id: str, label: str, kind: str, info: str, distance_km: float | None

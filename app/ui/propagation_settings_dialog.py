@@ -52,6 +52,10 @@ class PropagationSettingsDialog(QDialog):
             ("Поріг жовтої зони", self._yellow_threshold, -40.0, 40.0),
             ("Поріг червоної зони", self._red_threshold, -40.0, 40.0),
         ]
+        self._validation_hint = QLabel("", self)
+        self._validation_hint.setWordWrap(True)
+        self._validation_hint.setStyleSheet("color: #dc2626; font-weight: 600;")
+        self._validation_hint.hide()
 
         self._set_fields_from_model(model)
 
@@ -77,10 +81,6 @@ class PropagationSettingsDialog(QDialog):
             self,
         )
         ranges.setWordWrap(True)
-        self._validation_hint = QLabel("", self)
-        self._validation_hint.setWordWrap(True)
-        self._validation_hint.setStyleSheet("color: #dc2626; font-weight: 600;")
-        self._validation_hint.hide()
 
         self._apply_btn = QPushButton("Застосувати", self)
         self._apply_btn.clicked.connect(self._apply_only)
@@ -221,7 +221,8 @@ class PropagationSettingsDialog(QDialog):
         self._red_threshold.setText(f"{model.red_threshold_db:.2f}")
         for _, field, _, _ in self._field_specs:
             self._set_field_error(field, None)
-        self._validation_hint.hide()
+        if hasattr(self, "_validation_hint"):
+            self._validation_hint.hide()
 
     def _reset_to_defaults(self) -> None:
         defaults = PropagationModelConfig(model_version=self._current_model.model_version)

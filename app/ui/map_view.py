@@ -26,6 +26,7 @@ class MapBridge(QObject):
         on_request_rename_site: Callable[[str], None],
         on_select_node: Callable[[str], None],
         on_open_site: Callable[[str], None],
+        on_viewport_changed: Callable[[float, float, float, float, int], None],
         on_set_height_mode: Callable[[bool], None],
         on_set_azimuth_mode: Callable[[bool], None],
         on_set_ruler_mode: Callable[[bool], None],
@@ -50,6 +51,7 @@ class MapBridge(QObject):
         self._on_request_rename_site = on_request_rename_site
         self._on_select_node = on_select_node
         self._on_open_site = on_open_site
+        self._on_viewport_changed = on_viewport_changed
         self._on_set_height_mode = on_set_height_mode
         self._on_set_azimuth_mode = on_set_azimuth_mode
         self._on_set_ruler_mode = on_set_ruler_mode
@@ -101,6 +103,10 @@ class MapBridge(QObject):
     @Slot(str)
     def openSite(self, site_id: str) -> None:
         self._on_open_site(site_id)
+
+    @Slot(float, float, float, float, int)
+    def reportViewport(self, south: float, west: float, north: float, east: float, zoom: int) -> None:
+        self._on_viewport_changed(south, west, north, east, zoom)
 
     @Slot(bool)
     def setHeightMode(self, enabled: bool) -> None:
@@ -180,6 +186,7 @@ class MapView(QWebEngineView):
         on_request_rename_site: Callable[[str], None],
         on_select_node: Callable[[str], None],
         on_open_site: Callable[[str], None],
+        on_viewport_changed: Callable[[float, float, float, float, int], None],
         on_set_height_mode: Callable[[bool], None],
         on_set_azimuth_mode: Callable[[bool], None],
         on_set_ruler_mode: Callable[[bool], None],
@@ -206,6 +213,7 @@ class MapView(QWebEngineView):
             on_request_rename_site,
             on_select_node,
             on_open_site,
+            on_viewport_changed,
             on_set_height_mode,
             on_set_azimuth_mode,
             on_set_ruler_mode,

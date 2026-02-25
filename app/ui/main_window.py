@@ -112,6 +112,7 @@ class MainWindow(QMainWindow):
             on_request_rename_site=self._on_map_request_rename_site,
             on_select_node=self._on_map_select_node,
             on_open_site=self._on_map_open_site,
+            on_viewport_changed=self._on_map_viewport_changed,
             on_set_height_mode=self._set_height_mode_from_map,
             on_set_azimuth_mode=self._set_azimuth_mode_from_map,
             on_set_ruler_mode=self._set_ruler_mode_from_map,
@@ -1293,6 +1294,12 @@ class MainWindow(QMainWindow):
         self._pending_zoom = int(zoom)
         self._schedule_elevation_prefetch()
 
+    def _on_map_viewport_changed(
+        self, south: float, west: float, north: float, east: float, zoom: int
+    ) -> None:
+        self._pending_bounds = (south, west, north, east)
+        self._pending_zoom = int(zoom)
+
 
     def _on_map_request_site_link(self, site_a_id: str, site_b_id: str) -> None:
         site_a = self._project.sites.get(site_a_id)
@@ -1677,6 +1684,9 @@ class MainWindow(QMainWindow):
         job_id: int,
         cancel_event: Event,
     ) -> None:
+        viewport_bounds = (
+            tuple(self._pending_bounds) if self._pending_bounds is not None else None
+        )
         job = (
             site_snapshot,
             antenna_snapshot,
@@ -1685,6 +1695,7 @@ class MainWindow(QMainWindow):
             coverage_id,
             job_id,
             cancel_event,
+            viewport_bounds,
         )
         if self._coverage_active_job is None:
             self._start_coverage_job(job)
@@ -1704,6 +1715,7 @@ class MainWindow(QMainWindow):
             coverage_id,
             job_id,
             cancel_event,
+            viewport_bounds,
         ) = job
         if cancel_event.is_set():
             return False
@@ -1726,6 +1738,7 @@ class MainWindow(QMainWindow):
             coverage_id,
             job_id,
             cancel_event,
+            viewport_bounds,
         )
         future.add_done_callback(lambda f, key=coverage_id, jid=job_id: self._on_coverage_done(key, jid, f))
         return True
@@ -2441,6 +2454,7 @@ class MainWindow(QMainWindow):
         coverage_id: str | None = None,
         job_id: int | None = None,
         cancel_event: Event | None = None,
+        viewport_bounds: tuple[float, float, float, float] | None = None,
     ) -> dict | None:
         if cancel_event is not None and cancel_event.is_set():
             return None
@@ -2483,6 +2497,7 @@ class MainWindow(QMainWindow):
             on_tile=tile_callback,
             on_progress=progress_callback,
             cancel_event=cancel_event,
+            viewport_bounds=viewport_bounds,
         )
         if raster_ok:
             return {
@@ -2774,6 +2789,7 @@ class MainWindow(QMainWindow):
         on_tile=None,
         on_progress=None,
         cancel_event: Event | None = None,
+        viewport_bounds: tuple[float, float, float, float] | None = None,
     ) -> bool:
         if cancel_event is not None and cancel_event.is_set():
             return False
@@ -2820,9 +2836,6 @@ class MainWindow(QMainWindow):
 
         half_bw = beamwidth / 2.0
         use_bw = beamwidth < 360.0 - 1e-3
-        heading_x = sin(radians(azimuth))
-        heading_y = cos(radians(azimuth))
-        cos_half_bw = cos(radians(half_bw))
         base_fspl = 92.45 + (20.0 * log10(freq_ghz))
 
         x_km_list = [(i - center) * step_km for i in range(size)]
@@ -2851,9 +2864,11 @@ class MainWindow(QMainWindow):
         def sector_bounds_xy() -> tuple[int, int, int, int]:
             if not use_bw:
                 return 0, size - 1, 0, size - 1
+
             def in_sector(angle: float) -> bool:
                 delta = (angle - azimuth + 540.0) % 360.0 - 180.0
                 return abs(delta) <= half_bw
+
             angles = [azimuth - half_bw, azimuth + half_bw]
             for cand in (0.0, 90.0, 180.0, 270.0):
                 if in_sector(cand):
@@ -2873,21 +2888,6 @@ class MainWindow(QMainWindow):
             j_min = max(0, int(floor(center - max_y / step_km)))
             j_max = min(size - 1, int(ceil(center - min_y / step_km)))
             return i_min, i_max, j_min, j_max
-
-        def adaptive_step(distance_km: float) -> float:
-            if distance_km <= 3.0:
-                step = 0.2
-            elif distance_km <= 8.0:
-                step = 0.3
-            elif distance_km <= 15.0:
-                step = 0.4
-            elif distance_km <= 30.0:
-                step = 0.6
-            else:
-                step = 0.8
-            if step >= distance_km:
-                step = max(0.1, distance_km / 2.0)
-            return step
 
         i_min, i_max, j_min, j_max = sector_bounds_xy()
         dem_i0 = max(0, i_min - 1)
@@ -2921,113 +2921,33 @@ class MainWindow(QMainWindow):
             local_j = global_j - dem_j0
             return self._dem_bilinear(dem_rows, local_i, local_j)
 
-        any_tiles = False
+        coverage_classes = [bytearray(size) for _ in range(size)]
 
-        def compute_tile(tile_x: int, tile_y: int, tile_w: int, tile_h: int) -> dict | None:
-            tile_pad = 2
-            render_w = tile_w + (2 * tile_pad)
-            render_h = tile_h + (2 * tile_pad)
-            image = Image.new("RGBA", (render_w, render_h), (0, 0, 0, 0))
-            pixels = image.load()
-            tile_has_samples = False
+        def set_class(i_idx: int, j_idx: int, coverage_class: int) -> None:
+            if coverage_class <= 0:
+                return
+            if i_idx < i_min or i_idx > i_max or j_idx < j_min or j_idx > j_max:
+                return
+            row = coverage_classes[j_idx]
+            if coverage_class > row[i_idx]:
+                row[i_idx] = coverage_class
 
-            for j in range(render_h):
-                if cancel_event is not None and cancel_event.is_set():
-                    return None
-                global_j = tile_y + j - tile_pad
-                if global_j < 0 or global_j >= size:
-                    continue
-                if global_j < j_min or global_j > j_max:
-                    continue
-                y_km = y_km_list[global_j]
-                for i in range(render_w):
-                    if cancel_event is not None and cancel_event.is_set():
-                        return None
-                    global_i = tile_x + i - tile_pad
-                    if global_i < 0 or global_i >= size:
-                        continue
-                    if global_i < i_min or global_i > i_max:
-                        continue
-                    x_km = x_km_list[global_i]
-                    dist_sq = (x_km * x_km) + (y_km * y_km)
-                    if dist_sq <= 0 or dist_sq > effective_range_sq:
-                        continue
-                    dist_km = sqrt(dist_sq)
-                    if use_bw:
-                        along_beam = (x_km * heading_x) + (y_km * heading_y)
-                        if along_beam < (dist_km * cos_half_bw):
-                            continue
-                    target_elev = elev_local_xy(x_km, y_km)
-                    if target_elev is None:
-                        continue
-                    env_loss = self._environment_loss_db(env_type, dist_km, freq_ghz)
-                    delta_no_diff = delta_eirp_for(dist_km, 0.0, env_loss)
-                    if delta_no_diff < -5.0:
-                        continue
-                    target_height = target_elev + rx_height_m
-                    step_path_km = adaptive_step(dist_km)
-                    path_steps = int(dist_km / step_path_km)
-                    profile_distances_km = [0.0]
-                    profile_elevations_m = [site_elev]
-                    blocked = False
-                    for step_idx in range(1, path_steps + 1):
-                        if cancel_event is not None and cancel_event.is_set():
-                            return None
-                        d_km = step_idx * step_path_km
-                        if d_km >= dist_km:
-                            break
-                        frac = d_km / dist_km
-                        x_s = x_km * frac
-                        y_s = y_km * frac
-                        elev_s = elev_local_xy(x_s, y_s)
-                        if elev_s is None:
-                            blocked = True
-                            break
-                        profile_distances_km.append(d_km)
-                        profile_elevations_m.append(elev_s)
-                    if blocked:
-                        continue
-                    profile_distances_km.append(dist_km)
-                    profile_elevations_m.append(target_elev)
-                    allowed_diffraction_db = max(0.0, delta_no_diff + 5.0)
-                    diffraction = profile_diffraction(
-                        profile_distances_km,
-                        profile_elevations_m,
-                        start_total_height_m=base_height,
-                        end_total_height_m=target_height,
-                        freq_ghz=freq_ghz,
-                        use_fresnel=True,
-                        obstruction_grace_m=20.0,
-                        max_total_loss_db=allowed_diffraction_db,
-                    )
-                    if diffraction.blocked:
-                        continue
-                    diff_loss = diffraction.diffraction_loss_db
-                    delta_eirp = delta_eirp_for(dist_km, diff_loss, env_loss)
-                    if delta_eirp >= 5.0:
-                        pixels[i, j] = (0, 200, 83, 160)
-                        tile_has_samples = True
-                    elif delta_eirp >= 0.0:
-                        pixels[i, j] = (255, 208, 0, 160)
-                        tile_has_samples = True
-                    elif delta_eirp >= -5.0:
-                        pixels[i, j] = (255, 23, 68, 160)
-                        tile_has_samples = True
-            if not tile_has_samples:
-                return None
-            if ImageFilter is not None:
-                image = image.filter(ImageFilter.GaussianBlur(radius=1.0))
-            if tile_pad > 0:
-                image = image.crop((tile_pad, tile_pad, tile_pad + tile_w, tile_pad + tile_h))
-            if image.getbbox() is None:
-                return None
-            buffer = io.BytesIO()
-            image.save(buffer, format="PNG")
-            data_url = "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
-            return {
-                "data_url": data_url,
-                "bounds": tile_bounds(tile_x, tile_y, tile_w, tile_h),
-            }
+        def build_ray_angles() -> list[float]:
+            angular_step = degrees(step_km / max(effective_range_km, step_km))
+            angular_step = max(0.7, min(6.0, angular_step))
+            if not use_bw:
+                count = max(16, int(ceil(360.0 / angular_step)))
+                if count <= 0:
+                    return [0.0]
+                delta = 360.0 / count
+                return [(idx * delta) % 360.0 for idx in range(count)]
+
+            span = max(beamwidth, 1.0)
+            count = max(2, int(ceil(span / angular_step)) + 1)
+            start = azimuth - half_bw
+            if count == 1:
+                return [azimuth % 360.0]
+            return [((start + (idx * span / (count - 1))) % 360.0) for idx in range(count)]
 
         tiles = []
         for tile_y in range(0, size, tile_size):
@@ -3043,11 +2963,173 @@ class MainWindow(QMainWindow):
         if not tiles:
             return False
 
-        total_chunks = len(tiles)
+        focus_i = float(center)
+        focus_j = float(center)
+        viewport_box: tuple[float, float, float, float] | None = None
+        if viewport_bounds is not None and len(viewport_bounds) == 4:
+            south, west, north, east = viewport_bounds
+            viewport_box = (min(south, north), min(west, east), max(south, north), max(west, east))
+            focus_lat = (south + north) / 2.0
+            focus_lon = (west + east) / 2.0
+            focus_i = ((focus_lon - lon) / lon_per_km) / step_km + center
+            focus_j = center - (((focus_lat - lat) / lat_per_km) / step_km)
+
+        def tile_priority_key(tile: tuple[int, int, int, int]) -> tuple[int, float]:
+            tile_x, tile_y, tile_w, tile_h = tile
+            tile_i = tile_x + (tile_w * 0.5)
+            tile_j = tile_y + (tile_h * 0.5)
+            dist_sq = ((tile_i - focus_i) ** 2) + ((tile_j - focus_j) ** 2)
+            if viewport_box is None:
+                return (0, dist_sq)
+            south, west, north, east = viewport_box
+            tile_south, tile_west, tile_north, tile_east = tile_bounds(tile_x, tile_y, tile_w, tile_h)
+            intersects_viewport = not (
+                tile_east < west
+                or tile_west > east
+                or tile_north < south
+                or tile_south > north
+            )
+            return (0 if intersects_viewport else 1, dist_sq)
+
+        tiles.sort(key=tile_priority_key)
+
+        ray_angles = build_ray_angles()
+        max_ray_steps = max(1, int(ceil(effective_range_km / step_km)))
+        total_chunks = len(ray_angles) + len(tiles)
         processed_chunks = 0
         if on_progress is not None:
             on_progress({"stage": "raster_init", "total_chunks": total_chunks, "done_chunks": 0})
 
+        for angle_deg in ray_angles:
+            if cancel_event is not None and cancel_event.is_set():
+                return False
+            ray_rad = radians(angle_deg)
+            ray_sin = sin(ray_rad)
+            ray_cos = cos(ray_rad)
+            profile_distances_km = [0.0]
+            profile_elevations_m = [site_elev]
+            prev_i = -1
+            prev_j = -1
+
+            for step_idx in range(1, max_ray_steps + 1):
+                dist_km = step_idx * step_km
+                if dist_km > effective_range_km:
+                    break
+                x_km = ray_sin * dist_km
+                y_km = ray_cos * dist_km
+                dist_sq = (x_km * x_km) + (y_km * y_km)
+                if dist_sq <= 0 or dist_sq > effective_range_sq:
+                    continue
+
+                target_elev = elev_local_xy(x_km, y_km)
+                if target_elev is None:
+                    continue
+                profile_distances_km.append(dist_km)
+                profile_elevations_m.append(target_elev)
+
+                env_loss = self._environment_loss_db(env_type, dist_km, freq_ghz)
+                delta_no_diff = delta_eirp_for(dist_km, 0.0, env_loss)
+                if delta_no_diff < -5.0:
+                    # Further points on the same ray can only have lower FSPL margin.
+                    break
+
+                target_height = target_elev + rx_height_m
+                allowed_diffraction_db = max(0.0, delta_no_diff + 5.0)
+                diffraction = profile_diffraction(
+                    profile_distances_km,
+                    profile_elevations_m,
+                    start_total_height_m=base_height,
+                    end_total_height_m=target_height,
+                    freq_ghz=freq_ghz,
+                    use_fresnel=True,
+                    obstruction_grace_m=20.0,
+                    max_total_loss_db=allowed_diffraction_db,
+                )
+                if diffraction.blocked:
+                    continue
+
+                delta_eirp = delta_eirp_for(dist_km, diffraction.diffraction_loss_db, env_loss)
+                coverage_class = 0
+                if delta_eirp >= 5.0:
+                    coverage_class = 3
+                elif delta_eirp >= 0.0:
+                    coverage_class = 2
+                elif delta_eirp >= -5.0:
+                    coverage_class = 1
+                if coverage_class <= 0:
+                    continue
+
+                global_i = int(round((x_km / step_km) + center))
+                global_j = int(round(center - (y_km / step_km)))
+                if global_i == prev_i and global_j == prev_j:
+                    continue
+                prev_i = global_i
+                prev_j = global_j
+                if global_i < 0 or global_i >= size or global_j < 0 or global_j >= size:
+                    continue
+                set_class(global_i, global_j, coverage_class)
+
+            processed_chunks += 1
+            if on_progress is not None:
+                on_progress(
+                    {
+                        "stage": "raster",
+                        "total_chunks": total_chunks,
+                        "done_chunks": processed_chunks,
+                    }
+                )
+
+        def compute_tile(tile_x: int, tile_y: int, tile_w: int, tile_h: int) -> dict | None:
+            tile_pad = 2
+            render_w = tile_w + (2 * tile_pad)
+            render_h = tile_h + (2 * tile_pad)
+            image = Image.new("RGBA", (render_w, render_h), (0, 0, 0, 0))
+            pixels = image.load()
+            tile_has_samples = False
+            class_colors = {
+                1: (255, 23, 68, 160),
+                2: (255, 208, 0, 160),
+                3: (0, 200, 83, 160),
+            }
+
+            for j in range(render_h):
+                if cancel_event is not None and cancel_event.is_set():
+                    return None
+                global_j = tile_y + j - tile_pad
+                if global_j < 0 or global_j >= size:
+                    continue
+                if global_j < j_min or global_j > j_max:
+                    continue
+                class_row = coverage_classes[global_j]
+                for i in range(render_w):
+                    if cancel_event is not None and cancel_event.is_set():
+                        return None
+                    global_i = tile_x + i - tile_pad
+                    if global_i < 0 or global_i >= size:
+                        continue
+                    if global_i < i_min or global_i > i_max:
+                        continue
+                    coverage_class = class_row[global_i]
+                    if coverage_class <= 0:
+                        continue
+                    pixels[i, j] = class_colors.get(coverage_class, (0, 0, 0, 0))
+                    tile_has_samples = True
+            if not tile_has_samples:
+                return None
+            if ImageFilter is not None:
+                image = image.filter(ImageFilter.GaussianBlur(radius=1.0))
+            if tile_pad > 0:
+                image = image.crop((tile_pad, tile_pad, tile_pad + tile_w, tile_pad + tile_h))
+            if image.getbbox() is None:
+                return None
+            buffer = io.BytesIO()
+            image.save(buffer, format="PNG")
+            data_url = "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
+            return {
+                "data_url": data_url,
+                "bounds": tile_bounds(tile_x, tile_y, tile_w, tile_h),
+            }
+        any_tiles = False
         for tile_x, tile_y, tile_w, tile_h in tiles:
             if cancel_event is not None and cancel_event.is_set():
                 return False

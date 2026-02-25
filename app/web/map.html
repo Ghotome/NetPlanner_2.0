@@ -1382,6 +1382,12 @@
         bridge.prefetchElevation(b.getSouth(), b.getWest(), b.getNorth(), b.getEast(), map.getZoom());
       }
 
+      function reportViewportToBridge() {
+        if (!bridge || !bridge.reportViewport) { return; }
+        const b = map.getBounds();
+        bridge.reportViewport(b.getSouth(), b.getWest(), b.getNorth(), b.getEast(), map.getZoom());
+      }
+
       map.on('movestart', () => {
         if (coverageEnabled && !coverageSuppressed) {
           coverageSuppressed = true;
@@ -1403,6 +1409,7 @@
             coverageLayer.addTo(map);
           }
         }
+        reportViewportToBridge();
         if (map.hasLayer(elevationLayer)) {
           requestElevationPrefetch();
         }
@@ -1415,6 +1422,7 @@
             coverageLayer.addTo(map);
           }
         }
+        reportViewportToBridge();
         if (map.hasLayer(elevationLayer)) {
           requestElevationPrefetch();
         }
@@ -1510,7 +1518,12 @@
       window.showSearchResults = showSearchResults;
       window.focusSearchInput = focusSearchInput;
 
-      ensureBridgeReady(() => { bindToolButtons(); bindSearchControls(); bindKeyboardShortcuts(); });
+      ensureBridgeReady(() => {
+        bindToolButtons();
+        bindSearchControls();
+        bindKeyboardShortcuts();
+        reportViewportToBridge();
+      });
 
       function bearingDeg(a, b) {
         const lat1 = a.lat * Math.PI / 180;

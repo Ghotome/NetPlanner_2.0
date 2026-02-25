@@ -6,6 +6,7 @@ from typing import List
 
 from app.elevation import ElevationProvider
 from app.domain import Site
+from app.propagation_model import PropagationModelConfig
 from app.rf_propagation import profile_diffraction
 
 
@@ -22,7 +23,14 @@ class LinkAnalyzer:
     def __init__(self, elevation: ElevationProvider) -> None:
         self._elevation = elevation
 
-    def analyze(self, site_a: Site, site_b: Site, samples: int = 30) -> LinkProfile:
+    def analyze(
+        self,
+        site_a: Site,
+        site_b: Site,
+        samples: int = 30,
+        model: PropagationModelConfig | None = None,
+    ) -> LinkProfile:
+        propagation = model or PropagationModelConfig()
         lat1, lon1 = site_a.location.lat, site_a.location.lon
         lat2, lon2 = site_b.location.lat, site_b.location.lon
 
@@ -58,7 +66,9 @@ class LinkAnalyzer:
             end_total_height_m=end,
             freq_ghz=freq_ghz,
             use_fresnel=True,
-            obstruction_grace_m=20.0,
+            fresnel_factor=propagation.fresnel_factor,
+            earth_radius_m=propagation.effective_earth_radius_m(),
+            obstruction_grace_m=propagation.obstruction_grace_m,
         )
         clearance_needed = max(0.0, diffraction.max_los_obstruction_m)
         los_ok = not diffraction.blocked and diffraction.diffraction_loss_db <= 0.2

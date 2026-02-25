@@ -51,6 +51,7 @@ from app.link_analyzer import LinkAnalyzer, LinkProfile
 from app.rf_propagation import profile_diffraction
 from app.project_io import load_project, save_project
 from app.monitoring import PingChecker
+from app.propagation_model import PropagationModelConfig
 from app.ui.monitoring_panel import MonitoringPanel
 from app.ui.inspector import InspectorPanel
 from app.ui.link_profile_dialog import LinkProfileDialog
@@ -80,6 +81,8 @@ class MainWindow(QMainWindow):
     def __init__(self, project: NetworkProject, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._project = project
+        self._propagation_model = PropagationModelConfig.from_metadata(self._project.metadata)
+        self._project.metadata["propagation_model"] = self._propagation_model.to_metadata_json()
         self._cleanup_done = False
 
         self.setWindowTitle("NetPlanner 2.0")
@@ -1051,6 +1054,7 @@ class MainWindow(QMainWindow):
             profile_distances_km=profile_distances,
             profile_elevations_m=profile_elevations,
             parent=self,
+            k_factor=self._propagation_model.k_factor,
         )
         dialog.exec()
         self.map_view.set_horizon_mode(False)
@@ -1467,6 +1471,8 @@ class MainWindow(QMainWindow):
                 target.required_sinr_db = payload.get("required_sinr_db")
             target.misc_losses_db = payload.get("misc_losses_db")
             target.link_margin_db = payload.get("link_margin_db")
+            if "calc_result_text" in payload:
+                target.calc_result_text = payload.get("calc_result_text")
             if "applied" in payload:
                 target.applied = bool(payload.get("applied"))
 
@@ -1545,7 +1551,12 @@ class MainWindow(QMainWindow):
         site_b = self._project.sites.get(link.site_b_id)
         if site_a is None or site_b is None:
             return
-        profile = self._link_analyzer.analyze(site_a, site_b, samples=30)
+        profile = self._link_analyzer.analyze(
+            site_a,
+            site_b,
+            samples=30,
+            model=self._propagation_model,
+        )
         dialog = LinkProfileDialog(profile, self)
         dialog.exec()
 
@@ -1727,6 +1738,10 @@ class MainWindow(QMainWindow):
             job_id,
             site_snapshot.name,
             antenna_snapshot.name or "Антена",
+        )
+        self.monitoring_panel.add_event(
+            f"[Покриття] Розрахунок... {site_snapshot.name}/{antenna_snapshot.name or antenna_snapshot.id}: "
+            f"{self._propagation_model.short_label()}"
         )
         self._set_busy("Розрахунок покриття…")
         future = self._bg_executor.submit(
@@ -2458,6 +2473,7 @@ class MainWindow(QMainWindow):
     ) -> dict | None:
         if cancel_event is not None and cancel_event.is_set():
             return None
+        model = self._propagation_model
         site_elevation = None
         if self._elevation.available:
             site_elevation = self._elevation.get_elevation(site.location.lat, site.location.lon)
@@ -2477,6 +2493,11 @@ class MainWindow(QMainWindow):
         horizon_limit_km = self._radio_horizon_limit_km(antenna, site_elevation_m=site_elevation)
         if horizon_limit_km is not None:
             range_km = min(range_km, horizon_limit_km)
+        calc_summary = (
+            f"Радіус {range_km:.2f} км | "
+            f"Δ FSPL: {model.green_threshold_db:+.0f}/{model.yellow_threshold_db:+.0f}/{model.red_threshold_db:+.0f} dB | "
+            f"{model.short_label()}"
+        )
         tile_callback = None
         progress_callback = None
         if coverage_id and job_id:
@@ -2503,6 +2524,7 @@ class MainWindow(QMainWindow):
             return {
                 "mode": "raster_done",
                 "tooltip": tooltip,
+                "calc_summary": calc_summary,
             }
         if cancel_event is not None and cancel_event.is_set():
             return None
@@ -2521,6 +2543,7 @@ class MainWindow(QMainWindow):
                 "mode": "bands",
                 "bands": bands,
                 "tooltip": tooltip,
+                "calc_summary": calc_summary,
             }
         points = self._coverage_points_with_dem(
             site,
@@ -2537,6 +2560,7 @@ class MainWindow(QMainWindow):
                 "points": points,
                 "color": color,
                 "tooltip": tooltip,
+                "calc_summary": calc_summary,
             }
         return {
             "mode": "simple",
@@ -2547,6 +2571,7 @@ class MainWindow(QMainWindow):
             "range_km": range_km,
             "color": color,
             "tooltip": tooltip,
+            "calc_summary": calc_summary,
         }
 
     def _on_coverage_done(self, coverage_id: str, job_id: int, future) -> None:
@@ -2590,16 +2615,34 @@ class MainWindow(QMainWindow):
             self._drop_coverage_tile_queue(coverage_id)
             self.map_view.remove_coverage(coverage_id)
             if (coverage_id, job_id) in self._coverage_cancelled_jobs:
+                antenna.calc_result_text = "Розрахунок скасовано."
+                self.inspector.set_antenna_calc_result(site.id, antenna.id, antenna.calc_result_text)
+                self.monitoring_panel.add_event(
+                    f"[Покриття] Скасовано {site.name}/{antenna.name or antenna.id}"
+                )
                 self._finish_coverage_progress(coverage_id, job_id, "скасовано")
             else:
+                antenna.calc_result_text = "Помилка розрахунку."
+                self.inspector.set_antenna_calc_result(site.id, antenna.id, antenna.calc_result_text)
+                self.monitoring_panel.add_event(
+                    f"[Покриття] Помилка розархунку {site.name}/{antenna.name or antenna.id}"
+                )
                 self._finish_coverage_progress(coverage_id, job_id, "помилка")
             self._coverage_cancelled_jobs.discard((coverage_id, job_id))
             self._set_busy(None)
             return
+        calc_summary = str(result.get("calc_summary") or "").strip()
+        if calc_summary:
+            antenna.calc_result_text = calc_summary
+            self.inspector.set_antenna_calc_result(site.id, antenna.id, calc_summary)
         mode = result.get("mode")
         if mode == "raster_done":
             self._flush_coverage_tiles(force_coverage_id=coverage_id)
             self._finish_coverage_progress(coverage_id, job_id, "готово")
+            if calc_summary:
+                self.monitoring_panel.add_event(
+                    f"[Покриття] Завершено: {site.name}/{antenna.name or antenna.id}: {calc_summary}"
+                )
             self._coverage_cancelled_jobs.discard((coverage_id, job_id))
             self._set_busy(None)
             return
@@ -2620,6 +2663,10 @@ class MainWindow(QMainWindow):
                 result["tooltip"],
             )
         self._finish_coverage_progress(coverage_id, job_id, "готово")
+        if calc_summary:
+            self.monitoring_panel.add_event(
+                f"[Покриття] Завершено: {site.name}/{antenna.name or antenna.id}: {calc_summary}"
+            )
         self._coverage_cancelled_jobs.discard((coverage_id, job_id))
         self._set_busy(None)
 
@@ -2808,6 +2855,13 @@ class MainWindow(QMainWindow):
         margin = antenna.link_margin_db or 0.0
         actual_eirp = tx_power + tx_gain - losses
         required_base = rx_sens + margin + losses - rx_gain
+        model = self._propagation_model
+        green_min_db = model.green_threshold_db
+        yellow_min_db = model.yellow_threshold_db
+        red_min_db = model.red_threshold_db
+        earth_radius_m = model.effective_earth_radius_m()
+        fresnel_factor = model.fresnel_factor
+        obstruction_grace_m = model.obstruction_grace_m
 
         effective_range_km = range_km
         if horizon_limit_km is not None:
@@ -3029,12 +3083,12 @@ class MainWindow(QMainWindow):
 
                 env_loss = self._environment_loss_db(env_type, dist_km, freq_ghz)
                 delta_no_diff = delta_eirp_for(dist_km, 0.0, env_loss)
-                if delta_no_diff < -5.0:
+                if delta_no_diff < red_min_db:
                     # Further points on the same ray can only have lower FSPL margin.
                     break
 
                 target_height = target_elev + rx_height_m
-                allowed_diffraction_db = max(0.0, delta_no_diff + 5.0)
+                allowed_diffraction_db = max(0.0, delta_no_diff - red_min_db)
                 diffraction = profile_diffraction(
                     profile_distances_km,
                     profile_elevations_m,
@@ -3042,7 +3096,9 @@ class MainWindow(QMainWindow):
                     end_total_height_m=target_height,
                     freq_ghz=freq_ghz,
                     use_fresnel=True,
-                    obstruction_grace_m=20.0,
+                    fresnel_factor=fresnel_factor,
+                    earth_radius_m=earth_radius_m,
+                    obstruction_grace_m=obstruction_grace_m,
                     max_total_loss_db=allowed_diffraction_db,
                 )
                 if diffraction.blocked:
@@ -3050,11 +3106,11 @@ class MainWindow(QMainWindow):
 
                 delta_eirp = delta_eirp_for(dist_km, diffraction.diffraction_loss_db, env_loss)
                 coverage_class = 0
-                if delta_eirp >= 5.0:
+                if delta_eirp >= green_min_db:
                     coverage_class = 3
-                elif delta_eirp >= 0.0:
+                elif delta_eirp >= yellow_min_db:
                     coverage_class = 2
-                elif delta_eirp >= -5.0:
+                elif delta_eirp >= red_min_db:
                     coverage_class = 1
                 if coverage_class <= 0:
                     continue
@@ -3163,6 +3219,7 @@ class MainWindow(QMainWindow):
     ) -> list | None:
         if cancel_event is not None and cancel_event.is_set():
             return None
+        model = self._propagation_model
         freq_ghz = antenna.frequency_ghz
         if freq_ghz is None or freq_ghz <= 0:
             return None
@@ -3184,9 +3241,9 @@ class MainWindow(QMainWindow):
             term = (fspl_max - 92.45 - (20.0 * log10(freq_ghz))) / 20.0
             return 10 ** term
 
-        green_range = range_for_delta(5.0)
-        yellow_range = range_for_delta(0.0)
-        red_range = range_for_delta(-5.0)
+        green_range = range_for_delta(model.green_threshold_db)
+        yellow_range = range_for_delta(model.yellow_threshold_db)
+        red_range = range_for_delta(model.red_threshold_db)
         if green_range is None or yellow_range is None or red_range is None:
             return None
 
@@ -3256,8 +3313,8 @@ class MainWindow(QMainWindow):
             bands.append({"color": "#22c55e", "latlngs": green_points})
         return bands if bands else None
 
-    @staticmethod
     def _radio_horizon_limit_km(
+        self,
         antenna: AntennaParams,
         site_elevation_m: float | None = None,
         default_rx_height_m: float = 2.0,
@@ -3269,8 +3326,9 @@ class MainWindow(QMainWindow):
         rx_height = antenna.rx_height_m if antenna.rx_height_m is not None else default_rx_height_m
         if rx_height < 0:
             rx_height = 0.0
-        horizon_km = 3.57 * (sqrt(tx_height + ground_m) + sqrt(rx_height))
-        return horizon_km + 10.0
+        tx_total_m = tx_height + ground_m
+        rx_total_m = rx_height
+        return self._propagation_model.radio_horizon_limit_km(tx_total_m, rx_total_m)
 
     def _coverage_los_distances(
         self,
@@ -3282,7 +3340,7 @@ class MainWindow(QMainWindow):
         site_elevation: float | None = None,
         allowed_diffraction_db: float = 0.0,
         use_fresnel: bool = True,
-        obstruction_grace_m: float = 20.0,
+        obstruction_grace_m: float | None = None,
         cancel_event: Event | None = None,
     ) -> list[tuple[int, float]] | None:
         if cancel_event is not None and cancel_event.is_set():
@@ -3299,6 +3357,10 @@ class MainWindow(QMainWindow):
         if rx_height_m is None:
             rx_height_m = 2.0
         freq_ghz = antenna.frequency_ghz
+        model = self._propagation_model
+        model_obstruction_grace_m = (
+            model.obstruction_grace_m if obstruction_grace_m is None else obstruction_grace_m
+        )
         step_km = max(0.2, range_km / 12)
         sample_distances = []
         dist_cursor = step_km
@@ -3352,7 +3414,9 @@ class MainWindow(QMainWindow):
                     end_total_height_m=target_height,
                     freq_ghz=freq_ghz,
                     use_fresnel=use_fresnel,
-                    obstruction_grace_m=obstruction_grace_m,
+                    fresnel_factor=model.fresnel_factor,
+                    earth_radius_m=model.effective_earth_radius_m(),
+                    obstruction_grace_m=model_obstruction_grace_m,
                     max_total_loss_db=allowed_diffraction_db,
                 )
                 if diffraction.blocked or diffraction.diffraction_loss_db > allowed_diffraction_db:

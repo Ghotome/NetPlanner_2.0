@@ -240,6 +240,7 @@ def antenna_to_dict(antenna: AntennaParams) -> dict[str, Any]:
         "misc_losses_db": antenna.misc_losses_db,
         "link_margin_db": antenna.link_margin_db,
         "mcs": antenna.mcs,
+        "calc_result_text": antenna.calc_result_text,
     }
 
 
@@ -265,6 +266,7 @@ def antenna_from_dict(data: dict[str, Any]) -> AntennaParams:
         misc_losses_db=data.get("misc_losses_db"),
         link_margin_db=data.get("link_margin_db"),
         mcs=data.get("mcs"),
+        calc_result_text=data.get("calc_result_text"),
     )
 
 

@@ -108,6 +108,7 @@ class AntennaParams:
     misc_losses_db: Optional[float] = None
     link_margin_db: Optional[float] = None
     mcs: Optional[str] = None
+    calc_result_text: Optional[str] = None
 
 
 @dataclass

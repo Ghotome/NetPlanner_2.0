@@ -165,11 +165,13 @@ class AntennaBlock(QWidget):
         self._calc_fspl = QLineEdit(self)
         self._calc_required = QLineEdit(self)
         self._calc_ok = QLineEdit(self)
+        self._calc_result = QLineEdit(self)
 
         self._calc_fspl.setReadOnly(True)
         self._calc_required.setReadOnly(True)
         self._calc_required.setVisible(False)
         self._calc_ok.setReadOnly(True)
+        self._calc_result.setReadOnly(True)
 
         az_validator = QDoubleValidator(0.0, 360.0, 1, self)
         az_validator.setLocale(QLocale.c())
@@ -244,6 +246,7 @@ class AntennaBlock(QWidget):
         label_calc_distance = QLabel("Потрібна дистанція (км):")
         label_calc_fspl = QLabel("Втрати FSPL (дБ):")
         label_calc_ok = QLabel("EIRP OK:")
+        label_calc_result = QLabel("Результат покриття:")
 
         label_rx_sens.setToolTip("Параметр береться зі специфікації пристрою (RX sensitivity).")
         label_channel_width.setToolTip(
@@ -286,6 +289,7 @@ class AntennaBlock(QWidget):
             "Затухання сигналу у вільному просторі (Free Space Path Loss) на введеній дистанції."
         )
         label_calc_ok.setToolTip("EIRP OK, якщо потужність передавача достатня для покриття дистанції.")
+        label_calc_result.setToolTip("Останній збережений результат розрахунку покриття для цієї антени.")
 
         form.addRow(label_preset, self._preset)
         form.addRow(QLabel("Тип антени:"), self._antenna_type)
@@ -337,6 +341,7 @@ class AntennaBlock(QWidget):
         add_error(self._calc_distance, "Діапазон 0.1–300 км.")
         form.addRow(label_calc_fspl, self._calc_fspl)
         form.addRow(label_calc_ok, self._calc_ok)
+        form.addRow(label_calc_result, self._calc_result)
 
         self._apply_btn = QPushButton("Застосувати антену", self)
         self._apply_btn.clicked.connect(self._emit_apply)
@@ -413,6 +418,7 @@ class AntennaBlock(QWidget):
             self._required_sinr.setText("" if antenna.required_sinr_db is None else str(antenna.required_sinr_db))
             self._losses.setText("" if antenna.misc_losses_db is None else str(antenna.misc_losses_db))
             self._margin.setText("" if antenna.link_margin_db is None else str(antenna.link_margin_db))
+            self._calc_result.setText(antenna.calc_result_text or "")
             self._update_eirp_calculator()
             if antenna.azimuth_deg is None or antenna.beamwidth_deg is None:
                 self._apply_antenna_type_defaults(force=False)
@@ -510,8 +516,12 @@ class AntennaBlock(QWidget):
             "required_sinr_db": float(self._required_sinr.text()) if self._required_sinr.text().strip() else None,
             "misc_losses_db": float(self._losses.text()) if self._losses.text().strip() else None,
             "link_margin_db": float(self._margin.text()) if self._margin.text().strip() else None,
+            "calc_result_text": self._calc_result.text().strip() or None,
             "applied": self._applied,
         }
+
+    def set_calc_result_text(self, text: str | None) -> None:
+        self._calc_result.setText((text or "").strip())
 
     def _update_eirp_calculator(self) -> None:
         freq_text = self._frequency.text().strip()
@@ -1046,6 +1056,14 @@ class InspectorPanel(QWidget):
             return
         all_valid = all(block.is_valid() for block in self._antenna_blocks)
         self._apply_all_antennas_btn.setEnabled(all_valid)
+
+    def set_antenna_calc_result(self, site_id: str, antenna_id: str, text: str | None) -> None:
+        if self._current_site_id != site_id:
+            return
+        block = next((b for b in self._antenna_blocks if b.antenna_id == antenna_id), None)
+        if block is None:
+            return
+        block.set_calc_result_text(text)
 
     def set_site_elevation(self, elevation_m: float | None, available: bool = True) -> None:
         if elevation_m is None:

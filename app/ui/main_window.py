@@ -804,7 +804,7 @@ class MainWindow(QMainWindow):
             self.map_view.show_search_results([])
             return
 
-        allowed_sources = {"local", "coords", "mgrs", "online"}
+        allowed_sources = {"local", "online"}
         selected_sources = (
             {source for source in (sources or []) if source in allowed_sources}
             if sources is not None
@@ -830,7 +830,7 @@ class MainWindow(QMainWindow):
             seen.add(key)
             results.append(item)
 
-        latlon = self._parse_latlon_query(query) if "coords" in selected_sources else None
+        latlon = self._parse_latlon_query(query) if "online" in selected_sources else None
         if latlon is not None:
             lat, lon = latlon
             push_result(
@@ -840,12 +840,12 @@ class MainWindow(QMainWindow):
                     "lat": lat,
                     "lon": lon,
                     "zoom": 15,
-                    "source": "coords",
-                    "source_label": "Координати",
+                    "source": "online",
+                    "source_label": "Онлайн",
                 }
             )
 
-        mgrs_coord = self._parse_mgrs_query(query) if "mgrs" in selected_sources else None
+        mgrs_coord = self._parse_mgrs_query(query) if "online" in selected_sources else None
         if mgrs_coord is not None:
             lat, lon = mgrs_coord
             push_result(
@@ -855,8 +855,8 @@ class MainWindow(QMainWindow):
                     "lat": lat,
                     "lon": lon,
                     "zoom": 15,
-                    "source": "mgrs",
-                    "source_label": "MGRS",
+                    "source": "online",
+                    "source_label": "Онлайн",
                 }
             )
 
@@ -3313,32 +3313,28 @@ class MainWindow(QMainWindow):
         cancel_event: Event | None = None,
         on_progress=None,
     ) -> list[array] | None:
-        rows: list[array] = []
-        nan = float("nan")
         total_rows = len(lat_values)
         if on_progress is not None and total_rows > 0:
             on_progress({"stage": "dem_init", "total_rows": total_rows, "done_rows": 0})
         notify_step = max(1, total_rows // 50) if total_rows > 0 else 1
-        for lat_value in lat_values:
-            if cancel_event is not None and cancel_event.is_set():
-                return None
-            row = array("f")
-            for lon_value in lon_values:
-                if cancel_event is not None and cancel_event.is_set():
-                    return None
-                elev = self._elevation.get_elevation(lat_value, lon_value)
-                row.append(float(elev) if elev is not None else nan)
-            rows.append(row)
+
+        def emit_row_progress(done_rows: int, rows_count: int) -> None:
             if on_progress is not None:
-                done_rows = len(rows)
                 if done_rows == total_rows or (done_rows % notify_step) == 0:
                     on_progress(
                         {
                             "stage": "dem",
-                            "total_rows": total_rows,
+                            "total_rows": rows_count,
                             "done_rows": done_rows,
                         }
                     )
+
+        rows = self._elevation.get_elevations_grid(
+            lat_values,
+            lon_values,
+            cancel_event=cancel_event,
+            on_progress=emit_row_progress,
+        )
         return rows
 
     @staticmethod

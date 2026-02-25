@@ -60,6 +60,7 @@ from app.ui.eirp_calculator import EirpCalculatorDialog
 from app.ui.horizon_calculator import HorizonCalculatorDialog
 from app.ui.watt_dbm_calculator import WattDbmCalculatorDialog
 from app.ui.frequency_calculator import FrequencyCalculatorDialog
+from app.ui.propagation_settings_dialog import PropagationSettingsDialog
 from app.ui.map_view import MapView
 from app.ui.project_tree import ProjectTree
 from app.ui.site_dialog import LinkFormDialog, SiteDevicesDialog
@@ -310,6 +311,9 @@ class MainWindow(QMainWindow):
         self._los_action.setCheckable(True)
         self._los_action.toggled.connect(self._toggle_los_mode)
 
+        self._propagation_settings_action = QAction("Параметри моделі", self)
+        self._propagation_settings_action.triggered.connect(self._open_propagation_settings)
+
     def _confirm_action(self, title: str, message: str) -> bool:
         return (
             QMessageBox.question(
@@ -373,6 +377,40 @@ class MainWindow(QMainWindow):
         else:
             self._clear_hint_overlay()
 
+    def _open_propagation_settings(self) -> None:
+        dialog = PropagationSettingsDialog(self._propagation_model, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        new_model = dialog.result_model()
+        model_changed = new_model.to_dict() != self._propagation_model.to_dict()
+        if model_changed:
+            self._propagation_model = new_model
+            self._project.metadata["propagation_model"] = new_model.to_metadata_json()
+            self._dirty = True
+            self.monitoring_panel.add_event(f"[Модель] Оновлено: {new_model.short_label()}")
+            self._show_hint_overlay(
+                "Параметри моделі збережено. Нові значення застосуються при наступному розрахунку.",
+                duration_ms=3200,
+            )
+        if dialog.should_recalculate_all():
+            self._recalculate_all_coverages()
+
+    def _recalculate_all_coverages(self) -> None:
+        applied_total = sum(1 for s in self._project.sites.values() for a in s.antennas if a.applied)
+        if applied_total == 0:
+            self._show_hint_overlay("Немає застосованих антен для перерахунку.", duration_ms=2600)
+            return
+        if not self._coverage_action.isChecked():
+            self._coverage_action.setChecked(True)
+            self._show_hint_overlay(
+                f"Запущено повний перерахунок: {applied_total} антен.", duration_ms=3200
+            )
+            return
+        for site in self._project.sites.values():
+            if any(antenna.applied for antenna in site.antennas):
+                self._request_site_coverage_update(site.id)
+        self._show_hint_overlay(f"Запущено повний перерахунок: {applied_total} антен.", duration_ms=3200)
+
     def _set_height_mode_from_map(self, enabled: bool) -> None:
         self._height_action.setChecked(enabled)
 
@@ -397,6 +435,9 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
         exit_action = file_menu.addAction("Вихід", self.close, "Ctrl+Q")
 
+        edit_menu = menu.addMenu("Правка")
+        propagation_settings_action = edit_menu.addAction(self._propagation_settings_action)
+
         help_menu = menu.addMenu("Довідка")
         about_action = help_menu.addAction("Про програму", self._about)
 
@@ -405,6 +446,7 @@ class MainWindow(QMainWindow):
         self._set_menu_action_icon(save_project_action, "SP_DialogSaveButton")
         self._set_menu_action_icon(save_as_project_action, "SP_DialogSaveButton")
         self._set_menu_action_icon(exit_action, "SP_DialogCloseButton")
+        self._set_menu_action_icon(propagation_settings_action, "SP_FileDialogDetailedView")
         self._set_menu_action_icon(about_action, "SP_MessageBoxInformation")
 
     def _apply_styles(self) -> None:

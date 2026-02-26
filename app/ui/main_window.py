@@ -1515,6 +1515,8 @@ class MainWindow(QMainWindow):
             target.link_margin_db = payload.get("link_margin_db")
             if "calc_result_text" in payload:
                 target.calc_result_text = payload.get("calc_result_text")
+            if "calc_history" in payload and isinstance(payload.get("calc_history"), list):
+                target.calc_history = [entry for entry in payload.get("calc_history", []) if isinstance(entry, dict)]
             if "applied" in payload:
                 target.applied = bool(payload.get("applied"))
 
@@ -1673,6 +1675,47 @@ class MainWindow(QMainWindow):
     @staticmethod
     def _coverage_key(site_id: str, antenna_id: str) -> str:
         return f"{site_id}:{antenna_id}"
+
+    @staticmethod
+    def _antenna_snapshot_for_history(antenna: AntennaParams) -> dict:
+        return {
+            "antenna_type": antenna.antenna_type,
+            "azimuth_deg": antenna.azimuth_deg,
+            "beamwidth_deg": antenna.beamwidth_deg,
+            "gain_dbi": antenna.gain_dbi,
+            "height_m": antenna.height_m,
+            "frequency_ghz": antenna.frequency_ghz,
+            "tx_power_dbm": antenna.tx_power_dbm,
+            "mcs": antenna.mcs,
+            "rx_gain_dbi": antenna.rx_gain_dbi,
+            "rx_height_m": antenna.rx_height_m,
+            "rx_sensitivity_dbm": antenna.rx_sensitivity_dbm,
+            "channel_width_mhz": antenna.channel_width_mhz,
+            "noise_figure_db": antenna.noise_figure_db,
+            "required_sinr_db": antenna.required_sinr_db,
+            "misc_losses_db": antenna.misc_losses_db,
+            "link_margin_db": antenna.link_margin_db,
+        }
+
+    def _append_antenna_history(self, site: Site, antenna: AntennaParams, summary: str) -> None:
+        history_entry = {
+            "timestamp_utc": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+            "summary": summary,
+            "global": self._propagation_model.to_dict(),
+            "site": {
+                "id": site.id,
+                "name": site.name,
+                "lat": round(site.location.lat, 6),
+                "lon": round(site.location.lon, 6),
+                "environment": site.metadata.get("environment") or "mixed",
+            },
+            "antenna": self._antenna_snapshot_for_history(antenna),
+        }
+        if not isinstance(antenna.calc_history, list):
+            antenna.calc_history = []
+        antenna.calc_history.append(history_entry)
+        if len(antenna.calc_history) > 50:
+            antenna.calc_history = antenna.calc_history[-50:]
 
     def _update_site_coverages(self, site: Site) -> None:
         for antenna in site.antennas:
@@ -2677,6 +2720,8 @@ class MainWindow(QMainWindow):
         if calc_summary:
             antenna.calc_result_text = calc_summary
             self.inspector.set_antenna_calc_result(site.id, antenna.id, calc_summary)
+            self._append_antenna_history(site, antenna, calc_summary)
+            self.inspector.set_antenna_calc_history(site.id, antenna.id, antenna.calc_history)
         mode = result.get("mode")
         if mode == "raster_done":
             self._flush_coverage_tiles(force_coverage_id=coverage_id)

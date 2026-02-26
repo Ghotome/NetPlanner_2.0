@@ -44,7 +44,7 @@ class PropagationSettingsDialog(QDialog):
         self._yellow_threshold.setValidator(self._make_validator(-40.0, 40.0, 2))
         self._red_threshold.setValidator(self._make_validator(-40.0, 40.0, 2))
         self._field_specs = [
-            ("k-factor", self._k_factor, 0.5, 2.0),
+            ("k-фактор", self._k_factor, 0.5, 2.0),
             ("Коефіцієнт Френеля", self._fresnel_factor, 0.0, 1.0),
             ("Максимальна висота перешкоди", self._obstruction_grace, 0.0, 200.0),
             ("Запас за горизонтом", self._horizon_extension, 0.0, 100.0),
@@ -61,14 +61,14 @@ class PropagationSettingsDialog(QDialog):
 
         intro = QLabel(
             "Глобальні параметри моделі застосовуються тільки до нових розрахунків.\n"
-            "Автоперерахунок всіх антен вимкнено за замовчуванням.\n"
+            "БЕЗ РОЗУМІННЯ, ПРО ЩО ЙДЕ МОВА - НЕ МІНЯТИ!\n"
             "Щоб застосувати зміни до всіх антен, натисніть 'Застосувати'.\n",
             self,
         )
         intro.setWordWrap(True)
 
         form = QFormLayout()
-        form.addRow(QLabel("k-factor атмосфери:"), self._k_factor)
+        form.addRow(QLabel("k-фактор атмосфери:"), self._k_factor)
         form.addRow(QLabel("Коефіцієнт Френеля (0..1):"), self._fresnel_factor)
         form.addRow(QLabel("Максимальна висота перешкоди (м):"), self._obstruction_grace)
         form.addRow(QLabel("Запас за горизонтом (км):"), self._horizon_extension)

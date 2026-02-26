@@ -362,8 +362,6 @@
         </div>
         <div id="map-search-sources" class="map-search-sources">
           <button class="map-search-chip active" type="button" data-source="local">Локально</button>
-          <button class="map-search-chip active" type="button" data-source="coords">Координати</button>
-          <button class="map-search-chip active" type="button" data-source="mgrs">MGRS</button>
           <button class="map-search-chip active" type="button" data-source="online">Онлайн</button>
         </div>
         <div id="map-search-feedback" class="map-search-feedback"></div>
@@ -430,8 +428,6 @@
       let searchPin = null;
       const searchSourceState = {
         local: true,
-        coords: true,
-        mgrs: true,
         online: true,
       };
       let lastSearchQuery = '';
@@ -775,8 +771,8 @@
         resultsEl.innerHTML = '';
         if (!items.length) {
           resultsEl.style.display = 'none';
-          const mgrsOnly = lastSearchSources.length === 1 && lastSearchSources[0] === 'mgrs';
-          if (mgrsOnly && looksLikeMgrsCandidate(lastSearchQuery)) {
+          const onlineEnabled = lastSearchSources.includes('online');
+          if (onlineEnabled && looksLikeMgrsCandidate(lastSearchQuery)) {
             setSearchFeedback('MGRS не розпізнано.');
           } else {
             setSearchFeedback('');
@@ -1386,6 +1382,12 @@
         bridge.prefetchElevation(b.getSouth(), b.getWest(), b.getNorth(), b.getEast(), map.getZoom());
       }
 
+      function reportViewportToBridge() {
+        if (!bridge || !bridge.reportViewport) { return; }
+        const b = map.getBounds();
+        bridge.reportViewport(b.getSouth(), b.getWest(), b.getNorth(), b.getEast(), map.getZoom());
+      }
+
       map.on('movestart', () => {
         if (coverageEnabled && !coverageSuppressed) {
           coverageSuppressed = true;
@@ -1407,6 +1409,7 @@
             coverageLayer.addTo(map);
           }
         }
+        reportViewportToBridge();
         if (map.hasLayer(elevationLayer)) {
           requestElevationPrefetch();
         }
@@ -1419,6 +1422,7 @@
             coverageLayer.addTo(map);
           }
         }
+        reportViewportToBridge();
         if (map.hasLayer(elevationLayer)) {
           requestElevationPrefetch();
         }
@@ -1514,7 +1518,12 @@
       window.showSearchResults = showSearchResults;
       window.focusSearchInput = focusSearchInput;
 
-      ensureBridgeReady(() => { bindToolButtons(); bindSearchControls(); bindKeyboardShortcuts(); });
+      ensureBridgeReady(() => {
+        bindToolButtons();
+        bindSearchControls();
+        bindKeyboardShortcuts();
+        reportViewportToBridge();
+      });
 
       function bearingDeg(a, b) {
         const lat1 = a.lat * Math.PI / 180;

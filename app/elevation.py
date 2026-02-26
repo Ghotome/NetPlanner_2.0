@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+from array import array
 import math
 import threading
 from collections import OrderedDict
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional, Sequence
 from urllib.request import urlopen
 
 try:
@@ -61,6 +62,74 @@ class ElevationProvider:
             return (r * 256 + g + b / 256) - 32768
         except Exception:
             return None
+
+    def get_elevations_grid(
+        self,
+        lat_values: Sequence[float],
+        lon_values: Sequence[float],
+        cancel_event: threading.Event | None = None,
+        on_progress: Callable[[int, int], None] | None = None,
+    ) -> list[array] | None:
+        """Return DEM grid for all (lat, lon) pairs with tile-local batching."""
+        if Image is None:
+            return None
+        if not lat_values:
+            return []
+        if not lon_values:
+            return [array("f") for _ in lat_values]
+
+        zoom = self.zoom
+        n = 2.0**zoom
+        max_tile_index = int(n - 1)
+        nan = float("nan")
+
+        lon_pixels: list[tuple[int, int]] = []
+        for lon in lon_values:
+            x = ((lon + 180.0) / 360.0) * n
+            tile_x = int(x)
+            px = int((x - tile_x) * 256)
+            tile_x = max(0, min(max_tile_index, tile_x))
+            px = max(0, min(255, px))
+            lon_pixels.append((tile_x, px))
+
+        lat_pixels: list[tuple[int, int]] = []
+        for lat in lat_values:
+            lat_clamped = max(-89.999999, min(89.999999, lat))
+            lat_rad = math.radians(lat_clamped)
+            y = (1.0 - math.log(math.tan(lat_rad) + (1.0 / math.cos(lat_rad))) / math.pi) / 2.0 * n
+            tile_y = int(y)
+            py = int((y - tile_y) * 256)
+            tile_y = max(0, min(max_tile_index, tile_y))
+            py = max(0, min(255, py))
+            lat_pixels.append((tile_y, py))
+
+        rows: list[array] = []
+        call_cache: dict[tuple[int, int, int], Image.Image | None] = {}
+        total_rows = len(lat_pixels)
+        for row_idx, (tile_y, py) in enumerate(lat_pixels, start=1):
+            if cancel_event is not None and cancel_event.is_set():
+                return None
+            row = array("f")
+            for tile_x, px in lon_pixels:
+                if cancel_event is not None and cancel_event.is_set():
+                    return None
+                key = (zoom, tile_x, tile_y)
+                tile = call_cache.get(key)
+                if tile is None and key not in call_cache:
+                    tile = self._get_tile(zoom, tile_x, tile_y)
+                    call_cache[key] = tile
+                if tile is None:
+                    row.append(nan)
+                    continue
+                try:
+                    r, g, b = tile.getpixel((px, py))
+                    row.append((r * 256 + g + b / 256) - 32768)
+                except Exception:
+                    row.append(nan)
+            rows.append(row)
+            if on_progress is not None:
+                on_progress(row_idx, total_rows)
+        return rows
 
     def _get_tile(self, zoom: int, tile_x: int, tile_y: int) -> Optional["Image.Image"]:
         if Image is None:

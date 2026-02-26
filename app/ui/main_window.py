@@ -51,6 +51,7 @@ from app.link_analyzer import LinkAnalyzer, LinkProfile
 from app.rf_propagation import profile_diffraction
 from app.project_io import load_project, save_project
 from app.monitoring import PingChecker
+from app.propagation_model import PropagationModelConfig
 from app.ui.monitoring_panel import MonitoringPanel
 from app.ui.inspector import InspectorPanel
 from app.ui.link_profile_dialog import LinkProfileDialog
@@ -59,6 +60,7 @@ from app.ui.eirp_calculator import EirpCalculatorDialog
 from app.ui.horizon_calculator import HorizonCalculatorDialog
 from app.ui.watt_dbm_calculator import WattDbmCalculatorDialog
 from app.ui.frequency_calculator import FrequencyCalculatorDialog
+from app.ui.propagation_settings_dialog import PropagationSettingsDialog
 from app.ui.map_view import MapView
 from app.ui.project_tree import ProjectTree
 from app.ui.site_dialog import LinkFormDialog, SiteDevicesDialog
@@ -80,6 +82,8 @@ class MainWindow(QMainWindow):
     def __init__(self, project: NetworkProject, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._project = project
+        self._propagation_model = PropagationModelConfig.from_metadata(self._project.metadata)
+        self._project.metadata["propagation_model"] = self._propagation_model.to_metadata_json()
         self._cleanup_done = False
 
         self.setWindowTitle("NetPlanner 2.0")
@@ -112,6 +116,7 @@ class MainWindow(QMainWindow):
             on_request_rename_site=self._on_map_request_rename_site,
             on_select_node=self._on_map_select_node,
             on_open_site=self._on_map_open_site,
+            on_viewport_changed=self._on_map_viewport_changed,
             on_set_height_mode=self._set_height_mode_from_map,
             on_set_azimuth_mode=self._set_azimuth_mode_from_map,
             on_set_ruler_mode=self._set_ruler_mode_from_map,
@@ -306,6 +311,9 @@ class MainWindow(QMainWindow):
         self._los_action.setCheckable(True)
         self._los_action.toggled.connect(self._toggle_los_mode)
 
+        self._propagation_settings_action = QAction("Параметри моделі", self)
+        self._propagation_settings_action.triggered.connect(self._open_propagation_settings)
+
     def _confirm_action(self, title: str, message: str) -> bool:
         return (
             QMessageBox.question(
@@ -369,6 +377,40 @@ class MainWindow(QMainWindow):
         else:
             self._clear_hint_overlay()
 
+    def _open_propagation_settings(self) -> None:
+        dialog = PropagationSettingsDialog(self._propagation_model, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        new_model = dialog.result_model()
+        model_changed = new_model.to_dict() != self._propagation_model.to_dict()
+        if model_changed:
+            self._propagation_model = new_model
+            self._project.metadata["propagation_model"] = new_model.to_metadata_json()
+            self._dirty = True
+            self.monitoring_panel.add_event(f"[Модель] Оновлено: {new_model.short_label()}")
+            self._show_hint_overlay(
+                "Параметри моделі збережено. Нові значення застосуються при наступному розрахунку.",
+                duration_ms=3200,
+            )
+        if dialog.should_recalculate_all():
+            self._recalculate_all_coverages()
+
+    def _recalculate_all_coverages(self) -> None:
+        applied_total = sum(1 for s in self._project.sites.values() for a in s.antennas if a.applied)
+        if applied_total == 0:
+            self._show_hint_overlay("Немає застосованих антен для перерахунку.", duration_ms=2600)
+            return
+        if not self._coverage_action.isChecked():
+            self._coverage_action.setChecked(True)
+            self._show_hint_overlay(
+                f"Запущено повний перерахунок: {applied_total} антен.", duration_ms=3200
+            )
+            return
+        for site in self._project.sites.values():
+            if any(antenna.applied for antenna in site.antennas):
+                self._request_site_coverage_update(site.id)
+        self._show_hint_overlay(f"Запущено повний перерахунок: {applied_total} антен.", duration_ms=3200)
+
     def _set_height_mode_from_map(self, enabled: bool) -> None:
         self._height_action.setChecked(enabled)
 
@@ -393,6 +435,9 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
         exit_action = file_menu.addAction("Вихід", self.close, "Ctrl+Q")
 
+        edit_menu = menu.addMenu("Правка")
+        propagation_settings_action = edit_menu.addAction(self._propagation_settings_action)
+
         help_menu = menu.addMenu("Довідка")
         about_action = help_menu.addAction("Про програму", self._about)
 
@@ -401,6 +446,7 @@ class MainWindow(QMainWindow):
         self._set_menu_action_icon(save_project_action, "SP_DialogSaveButton")
         self._set_menu_action_icon(save_as_project_action, "SP_DialogSaveButton")
         self._set_menu_action_icon(exit_action, "SP_DialogCloseButton")
+        self._set_menu_action_icon(propagation_settings_action, "SP_FileDialogDetailedView")
         self._set_menu_action_icon(about_action, "SP_MessageBoxInformation")
 
     def _apply_styles(self) -> None:
@@ -804,7 +850,7 @@ class MainWindow(QMainWindow):
             self.map_view.show_search_results([])
             return
 
-        allowed_sources = {"local", "coords", "mgrs", "online"}
+        allowed_sources = {"local", "online"}
         selected_sources = (
             {source for source in (sources or []) if source in allowed_sources}
             if sources is not None
@@ -830,7 +876,7 @@ class MainWindow(QMainWindow):
             seen.add(key)
             results.append(item)
 
-        latlon = self._parse_latlon_query(query) if "coords" in selected_sources else None
+        latlon = self._parse_latlon_query(query) if "online" in selected_sources else None
         if latlon is not None:
             lat, lon = latlon
             push_result(
@@ -840,12 +886,12 @@ class MainWindow(QMainWindow):
                     "lat": lat,
                     "lon": lon,
                     "zoom": 15,
-                    "source": "coords",
-                    "source_label": "Координати",
+                    "source": "online",
+                    "source_label": "Онлайн",
                 }
             )
 
-        mgrs_coord = self._parse_mgrs_query(query) if "mgrs" in selected_sources else None
+        mgrs_coord = self._parse_mgrs_query(query) if "online" in selected_sources else None
         if mgrs_coord is not None:
             lat, lon = mgrs_coord
             push_result(
@@ -855,8 +901,8 @@ class MainWindow(QMainWindow):
                     "lat": lat,
                     "lon": lon,
                     "zoom": 15,
-                    "source": "mgrs",
-                    "source_label": "MGRS",
+                    "source": "online",
+                    "source_label": "Онлайн",
                 }
             )
 
@@ -1050,6 +1096,7 @@ class MainWindow(QMainWindow):
             profile_distances_km=profile_distances,
             profile_elevations_m=profile_elevations,
             parent=self,
+            k_factor=self._propagation_model.k_factor,
         )
         dialog.exec()
         self.map_view.set_horizon_mode(False)
@@ -1293,6 +1340,12 @@ class MainWindow(QMainWindow):
         self._pending_zoom = int(zoom)
         self._schedule_elevation_prefetch()
 
+    def _on_map_viewport_changed(
+        self, south: float, west: float, north: float, east: float, zoom: int
+    ) -> None:
+        self._pending_bounds = (south, west, north, east)
+        self._pending_zoom = int(zoom)
+
 
     def _on_map_request_site_link(self, site_a_id: str, site_b_id: str) -> None:
         site_a = self._project.sites.get(site_a_id)
@@ -1460,6 +1513,10 @@ class MainWindow(QMainWindow):
                 target.required_sinr_db = payload.get("required_sinr_db")
             target.misc_losses_db = payload.get("misc_losses_db")
             target.link_margin_db = payload.get("link_margin_db")
+            if "calc_result_text" in payload:
+                target.calc_result_text = payload.get("calc_result_text")
+            if "calc_history" in payload and isinstance(payload.get("calc_history"), list):
+                target.calc_history = [entry for entry in payload.get("calc_history", []) if isinstance(entry, dict)]
             if "applied" in payload:
                 target.applied = bool(payload.get("applied"))
 
@@ -1538,7 +1595,12 @@ class MainWindow(QMainWindow):
         site_b = self._project.sites.get(link.site_b_id)
         if site_a is None or site_b is None:
             return
-        profile = self._link_analyzer.analyze(site_a, site_b, samples=30)
+        profile = self._link_analyzer.analyze(
+            site_a,
+            site_b,
+            samples=30,
+            model=self._propagation_model,
+        )
         dialog = LinkProfileDialog(profile, self)
         dialog.exec()
 
@@ -1614,6 +1676,47 @@ class MainWindow(QMainWindow):
     def _coverage_key(site_id: str, antenna_id: str) -> str:
         return f"{site_id}:{antenna_id}"
 
+    @staticmethod
+    def _antenna_snapshot_for_history(antenna: AntennaParams) -> dict:
+        return {
+            "antenna_type": antenna.antenna_type,
+            "azimuth_deg": antenna.azimuth_deg,
+            "beamwidth_deg": antenna.beamwidth_deg,
+            "gain_dbi": antenna.gain_dbi,
+            "height_m": antenna.height_m,
+            "frequency_ghz": antenna.frequency_ghz,
+            "tx_power_dbm": antenna.tx_power_dbm,
+            "mcs": antenna.mcs,
+            "rx_gain_dbi": antenna.rx_gain_dbi,
+            "rx_height_m": antenna.rx_height_m,
+            "rx_sensitivity_dbm": antenna.rx_sensitivity_dbm,
+            "channel_width_mhz": antenna.channel_width_mhz,
+            "noise_figure_db": antenna.noise_figure_db,
+            "required_sinr_db": antenna.required_sinr_db,
+            "misc_losses_db": antenna.misc_losses_db,
+            "link_margin_db": antenna.link_margin_db,
+        }
+
+    def _append_antenna_history(self, site: Site, antenna: AntennaParams, summary: str) -> None:
+        history_entry = {
+            "timestamp_utc": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+            "summary": summary,
+            "global": self._propagation_model.to_dict(),
+            "site": {
+                "id": site.id,
+                "name": site.name,
+                "lat": round(site.location.lat, 6),
+                "lon": round(site.location.lon, 6),
+                "environment": site.metadata.get("environment") or "mixed",
+            },
+            "antenna": self._antenna_snapshot_for_history(antenna),
+        }
+        if not isinstance(antenna.calc_history, list):
+            antenna.calc_history = []
+        antenna.calc_history.append(history_entry)
+        if len(antenna.calc_history) > 50:
+            antenna.calc_history = antenna.calc_history[-50:]
+
     def _update_site_coverages(self, site: Site) -> None:
         for antenna in site.antennas:
             if antenna.applied:
@@ -1677,6 +1780,9 @@ class MainWindow(QMainWindow):
         job_id: int,
         cancel_event: Event,
     ) -> None:
+        viewport_bounds = (
+            tuple(self._pending_bounds) if self._pending_bounds is not None else None
+        )
         job = (
             site_snapshot,
             antenna_snapshot,
@@ -1685,6 +1791,7 @@ class MainWindow(QMainWindow):
             coverage_id,
             job_id,
             cancel_event,
+            viewport_bounds,
         )
         if self._coverage_active_job is None:
             self._start_coverage_job(job)
@@ -1704,6 +1811,7 @@ class MainWindow(QMainWindow):
             coverage_id,
             job_id,
             cancel_event,
+            viewport_bounds,
         ) = job
         if cancel_event.is_set():
             return False
@@ -1716,6 +1824,10 @@ class MainWindow(QMainWindow):
             site_snapshot.name,
             antenna_snapshot.name or "Антена",
         )
+        self.monitoring_panel.add_event(
+            f"[Покриття] Розрахунок: {site_snapshot.name}/{antenna_snapshot.name or antenna_snapshot.id}: "
+            f"{self._propagation_model.short_label()}"
+        )
         self._set_busy("Розрахунок покриття…")
         future = self._bg_executor.submit(
             self._compute_coverage_data,
@@ -1726,6 +1838,7 @@ class MainWindow(QMainWindow):
             coverage_id,
             job_id,
             cancel_event,
+            viewport_bounds,
         )
         future.add_done_callback(lambda f, key=coverage_id, jid=job_id: self._on_coverage_done(key, jid, f))
         return True
@@ -2441,9 +2554,11 @@ class MainWindow(QMainWindow):
         coverage_id: str | None = None,
         job_id: int | None = None,
         cancel_event: Event | None = None,
+        viewport_bounds: tuple[float, float, float, float] | None = None,
     ) -> dict | None:
         if cancel_event is not None and cancel_event.is_set():
             return None
+        model = self._propagation_model
         site_elevation = None
         if self._elevation.available:
             site_elevation = self._elevation.get_elevation(site.location.lat, site.location.lon)
@@ -2463,6 +2578,11 @@ class MainWindow(QMainWindow):
         horizon_limit_km = self._radio_horizon_limit_km(antenna, site_elevation_m=site_elevation)
         if horizon_limit_km is not None:
             range_km = min(range_km, horizon_limit_km)
+        calc_summary = (
+            f"Радіус {range_km:.2f} км | "
+            f"Δ FSPL: {model.green_threshold_db:+.0f}/{model.yellow_threshold_db:+.0f}/{model.red_threshold_db:+.0f} dB | "
+            f"{model.short_label()}"
+        )
         tile_callback = None
         progress_callback = None
         if coverage_id and job_id:
@@ -2483,11 +2603,13 @@ class MainWindow(QMainWindow):
             on_tile=tile_callback,
             on_progress=progress_callback,
             cancel_event=cancel_event,
+            viewport_bounds=viewport_bounds,
         )
         if raster_ok:
             return {
                 "mode": "raster_done",
                 "tooltip": tooltip,
+                "calc_summary": calc_summary,
             }
         if cancel_event is not None and cancel_event.is_set():
             return None
@@ -2506,6 +2628,7 @@ class MainWindow(QMainWindow):
                 "mode": "bands",
                 "bands": bands,
                 "tooltip": tooltip,
+                "calc_summary": calc_summary,
             }
         points = self._coverage_points_with_dem(
             site,
@@ -2522,6 +2645,7 @@ class MainWindow(QMainWindow):
                 "points": points,
                 "color": color,
                 "tooltip": tooltip,
+                "calc_summary": calc_summary,
             }
         return {
             "mode": "simple",
@@ -2532,6 +2656,7 @@ class MainWindow(QMainWindow):
             "range_km": range_km,
             "color": color,
             "tooltip": tooltip,
+            "calc_summary": calc_summary,
         }
 
     def _on_coverage_done(self, coverage_id: str, job_id: int, future) -> None:
@@ -2575,16 +2700,36 @@ class MainWindow(QMainWindow):
             self._drop_coverage_tile_queue(coverage_id)
             self.map_view.remove_coverage(coverage_id)
             if (coverage_id, job_id) in self._coverage_cancelled_jobs:
+                antenna.calc_result_text = "Розрахунок скасовано."
+                self.inspector.set_antenna_calc_result(site.id, antenna.id, antenna.calc_result_text)
+                self.monitoring_panel.add_event(
+                    f"[Покриття] Скасовано {site.name}/{antenna.name or antenna.id}"
+                )
                 self._finish_coverage_progress(coverage_id, job_id, "скасовано")
             else:
+                antenna.calc_result_text = "Помилка розрахунку."
+                self.inspector.set_antenna_calc_result(site.id, antenna.id, antenna.calc_result_text)
+                self.monitoring_panel.add_event(
+                    f"[Покриття] Помилка розархунку {site.name}/{antenna.name or antenna.id}"
+                )
                 self._finish_coverage_progress(coverage_id, job_id, "помилка")
             self._coverage_cancelled_jobs.discard((coverage_id, job_id))
             self._set_busy(None)
             return
+        calc_summary = str(result.get("calc_summary") or "").strip()
+        if calc_summary:
+            antenna.calc_result_text = calc_summary
+            self.inspector.set_antenna_calc_result(site.id, antenna.id, calc_summary)
+            self._append_antenna_history(site, antenna, calc_summary)
+            self.inspector.set_antenna_calc_history(site.id, antenna.id, antenna.calc_history)
         mode = result.get("mode")
         if mode == "raster_done":
             self._flush_coverage_tiles(force_coverage_id=coverage_id)
             self._finish_coverage_progress(coverage_id, job_id, "готово")
+            if calc_summary:
+                self.monitoring_panel.add_event(
+                    f"[Покриття] Завершено: {site.name}/{antenna.name or antenna.id}: {calc_summary}"
+                )
             self._coverage_cancelled_jobs.discard((coverage_id, job_id))
             self._set_busy(None)
             return
@@ -2605,6 +2750,10 @@ class MainWindow(QMainWindow):
                 result["tooltip"],
             )
         self._finish_coverage_progress(coverage_id, job_id, "готово")
+        if calc_summary:
+            self.monitoring_panel.add_event(
+                f"[Покриття] Завершено: {site.name}/{antenna.name or antenna.id}: {calc_summary}"
+            )
         self._coverage_cancelled_jobs.discard((coverage_id, job_id))
         self._set_busy(None)
 
@@ -2774,6 +2923,7 @@ class MainWindow(QMainWindow):
         on_tile=None,
         on_progress=None,
         cancel_event: Event | None = None,
+        viewport_bounds: tuple[float, float, float, float] | None = None,
     ) -> bool:
         if cancel_event is not None and cancel_event.is_set():
             return False
@@ -2792,6 +2942,13 @@ class MainWindow(QMainWindow):
         margin = antenna.link_margin_db or 0.0
         actual_eirp = tx_power + tx_gain - losses
         required_base = rx_sens + margin + losses - rx_gain
+        model = self._propagation_model
+        green_min_db = model.green_threshold_db
+        yellow_min_db = model.yellow_threshold_db
+        red_min_db = model.red_threshold_db
+        earth_radius_m = model.effective_earth_radius_m()
+        fresnel_factor = model.fresnel_factor
+        obstruction_grace_m = model.obstruction_grace_m
 
         effective_range_km = range_km
         if horizon_limit_km is not None:
@@ -2820,9 +2977,6 @@ class MainWindow(QMainWindow):
 
         half_bw = beamwidth / 2.0
         use_bw = beamwidth < 360.0 - 1e-3
-        heading_x = sin(radians(azimuth))
-        heading_y = cos(radians(azimuth))
-        cos_half_bw = cos(radians(half_bw))
         base_fspl = 92.45 + (20.0 * log10(freq_ghz))
 
         x_km_list = [(i - center) * step_km for i in range(size)]
@@ -2851,9 +3005,11 @@ class MainWindow(QMainWindow):
         def sector_bounds_xy() -> tuple[int, int, int, int]:
             if not use_bw:
                 return 0, size - 1, 0, size - 1
+
             def in_sector(angle: float) -> bool:
                 delta = (angle - azimuth + 540.0) % 360.0 - 180.0
                 return abs(delta) <= half_bw
+
             angles = [azimuth - half_bw, azimuth + half_bw]
             for cand in (0.0, 90.0, 180.0, 270.0):
                 if in_sector(cand):
@@ -2873,21 +3029,6 @@ class MainWindow(QMainWindow):
             j_min = max(0, int(floor(center - max_y / step_km)))
             j_max = min(size - 1, int(ceil(center - min_y / step_km)))
             return i_min, i_max, j_min, j_max
-
-        def adaptive_step(distance_km: float) -> float:
-            if distance_km <= 3.0:
-                step = 0.2
-            elif distance_km <= 8.0:
-                step = 0.3
-            elif distance_km <= 15.0:
-                step = 0.4
-            elif distance_km <= 30.0:
-                step = 0.6
-            else:
-                step = 0.8
-            if step >= distance_km:
-                step = max(0.1, distance_km / 2.0)
-            return step
 
         i_min, i_max, j_min, j_max = sector_bounds_xy()
         dem_i0 = max(0, i_min - 1)
@@ -2921,113 +3062,33 @@ class MainWindow(QMainWindow):
             local_j = global_j - dem_j0
             return self._dem_bilinear(dem_rows, local_i, local_j)
 
-        any_tiles = False
+        coverage_classes = [bytearray(size) for _ in range(size)]
 
-        def compute_tile(tile_x: int, tile_y: int, tile_w: int, tile_h: int) -> dict | None:
-            tile_pad = 2
-            render_w = tile_w + (2 * tile_pad)
-            render_h = tile_h + (2 * tile_pad)
-            image = Image.new("RGBA", (render_w, render_h), (0, 0, 0, 0))
-            pixels = image.load()
-            tile_has_samples = False
+        def set_class(i_idx: int, j_idx: int, coverage_class: int) -> None:
+            if coverage_class <= 0:
+                return
+            if i_idx < i_min or i_idx > i_max or j_idx < j_min or j_idx > j_max:
+                return
+            row = coverage_classes[j_idx]
+            if coverage_class > row[i_idx]:
+                row[i_idx] = coverage_class
 
-            for j in range(render_h):
-                if cancel_event is not None and cancel_event.is_set():
-                    return None
-                global_j = tile_y + j - tile_pad
-                if global_j < 0 or global_j >= size:
-                    continue
-                if global_j < j_min or global_j > j_max:
-                    continue
-                y_km = y_km_list[global_j]
-                for i in range(render_w):
-                    if cancel_event is not None and cancel_event.is_set():
-                        return None
-                    global_i = tile_x + i - tile_pad
-                    if global_i < 0 or global_i >= size:
-                        continue
-                    if global_i < i_min or global_i > i_max:
-                        continue
-                    x_km = x_km_list[global_i]
-                    dist_sq = (x_km * x_km) + (y_km * y_km)
-                    if dist_sq <= 0 or dist_sq > effective_range_sq:
-                        continue
-                    dist_km = sqrt(dist_sq)
-                    if use_bw:
-                        along_beam = (x_km * heading_x) + (y_km * heading_y)
-                        if along_beam < (dist_km * cos_half_bw):
-                            continue
-                    target_elev = elev_local_xy(x_km, y_km)
-                    if target_elev is None:
-                        continue
-                    env_loss = self._environment_loss_db(env_type, dist_km, freq_ghz)
-                    delta_no_diff = delta_eirp_for(dist_km, 0.0, env_loss)
-                    if delta_no_diff < -5.0:
-                        continue
-                    target_height = target_elev + rx_height_m
-                    step_path_km = adaptive_step(dist_km)
-                    path_steps = int(dist_km / step_path_km)
-                    profile_distances_km = [0.0]
-                    profile_elevations_m = [site_elev]
-                    blocked = False
-                    for step_idx in range(1, path_steps + 1):
-                        if cancel_event is not None and cancel_event.is_set():
-                            return None
-                        d_km = step_idx * step_path_km
-                        if d_km >= dist_km:
-                            break
-                        frac = d_km / dist_km
-                        x_s = x_km * frac
-                        y_s = y_km * frac
-                        elev_s = elev_local_xy(x_s, y_s)
-                        if elev_s is None:
-                            blocked = True
-                            break
-                        profile_distances_km.append(d_km)
-                        profile_elevations_m.append(elev_s)
-                    if blocked:
-                        continue
-                    profile_distances_km.append(dist_km)
-                    profile_elevations_m.append(target_elev)
-                    allowed_diffraction_db = max(0.0, delta_no_diff + 5.0)
-                    diffraction = profile_diffraction(
-                        profile_distances_km,
-                        profile_elevations_m,
-                        start_total_height_m=base_height,
-                        end_total_height_m=target_height,
-                        freq_ghz=freq_ghz,
-                        use_fresnel=True,
-                        obstruction_grace_m=20.0,
-                        max_total_loss_db=allowed_diffraction_db,
-                    )
-                    if diffraction.blocked:
-                        continue
-                    diff_loss = diffraction.diffraction_loss_db
-                    delta_eirp = delta_eirp_for(dist_km, diff_loss, env_loss)
-                    if delta_eirp >= 5.0:
-                        pixels[i, j] = (0, 200, 83, 160)
-                        tile_has_samples = True
-                    elif delta_eirp >= 0.0:
-                        pixels[i, j] = (255, 208, 0, 160)
-                        tile_has_samples = True
-                    elif delta_eirp >= -5.0:
-                        pixels[i, j] = (255, 23, 68, 160)
-                        tile_has_samples = True
-            if not tile_has_samples:
-                return None
-            if ImageFilter is not None:
-                image = image.filter(ImageFilter.GaussianBlur(radius=1.0))
-            if tile_pad > 0:
-                image = image.crop((tile_pad, tile_pad, tile_pad + tile_w, tile_pad + tile_h))
-            if image.getbbox() is None:
-                return None
-            buffer = io.BytesIO()
-            image.save(buffer, format="PNG")
-            data_url = "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
-            return {
-                "data_url": data_url,
-                "bounds": tile_bounds(tile_x, tile_y, tile_w, tile_h),
-            }
+        def build_ray_angles() -> list[float]:
+            angular_step = degrees(step_km / max(effective_range_km, step_km))
+            angular_step = max(0.7, min(6.0, angular_step))
+            if not use_bw:
+                count = max(16, int(ceil(360.0 / angular_step)))
+                if count <= 0:
+                    return [0.0]
+                delta = 360.0 / count
+                return [(idx * delta) % 360.0 for idx in range(count)]
+
+            span = max(beamwidth, 1.0)
+            count = max(2, int(ceil(span / angular_step)) + 1)
+            start = azimuth - half_bw
+            if count == 1:
+                return [azimuth % 360.0]
+            return [((start + (idx * span / (count - 1))) % 360.0) for idx in range(count)]
 
         tiles = []
         for tile_y in range(0, size, tile_size):
@@ -3043,11 +3104,175 @@ class MainWindow(QMainWindow):
         if not tiles:
             return False
 
-        total_chunks = len(tiles)
+        focus_i = float(center)
+        focus_j = float(center)
+        viewport_box: tuple[float, float, float, float] | None = None
+        if viewport_bounds is not None and len(viewport_bounds) == 4:
+            south, west, north, east = viewport_bounds
+            viewport_box = (min(south, north), min(west, east), max(south, north), max(west, east))
+            focus_lat = (south + north) / 2.0
+            focus_lon = (west + east) / 2.0
+            focus_i = ((focus_lon - lon) / lon_per_km) / step_km + center
+            focus_j = center - (((focus_lat - lat) / lat_per_km) / step_km)
+
+        def tile_priority_key(tile: tuple[int, int, int, int]) -> tuple[int, float]:
+            tile_x, tile_y, tile_w, tile_h = tile
+            tile_i = tile_x + (tile_w * 0.5)
+            tile_j = tile_y + (tile_h * 0.5)
+            dist_sq = ((tile_i - focus_i) ** 2) + ((tile_j - focus_j) ** 2)
+            if viewport_box is None:
+                return (0, dist_sq)
+            south, west, north, east = viewport_box
+            tile_south, tile_west, tile_north, tile_east = tile_bounds(tile_x, tile_y, tile_w, tile_h)
+            intersects_viewport = not (
+                tile_east < west
+                or tile_west > east
+                or tile_north < south
+                or tile_south > north
+            )
+            return (0 if intersects_viewport else 1, dist_sq)
+
+        tiles.sort(key=tile_priority_key)
+
+        ray_angles = build_ray_angles()
+        max_ray_steps = max(1, int(ceil(effective_range_km / step_km)))
+        total_chunks = len(ray_angles) + len(tiles)
         processed_chunks = 0
         if on_progress is not None:
             on_progress({"stage": "raster_init", "total_chunks": total_chunks, "done_chunks": 0})
 
+        for angle_deg in ray_angles:
+            if cancel_event is not None and cancel_event.is_set():
+                return False
+            ray_rad = radians(angle_deg)
+            ray_sin = sin(ray_rad)
+            ray_cos = cos(ray_rad)
+            profile_distances_km = [0.0]
+            profile_elevations_m = [site_elev]
+            prev_i = -1
+            prev_j = -1
+
+            for step_idx in range(1, max_ray_steps + 1):
+                dist_km = step_idx * step_km
+                if dist_km > effective_range_km:
+                    break
+                x_km = ray_sin * dist_km
+                y_km = ray_cos * dist_km
+                dist_sq = (x_km * x_km) + (y_km * y_km)
+                if dist_sq <= 0 or dist_sq > effective_range_sq:
+                    continue
+
+                target_elev = elev_local_xy(x_km, y_km)
+                if target_elev is None:
+                    continue
+                profile_distances_km.append(dist_km)
+                profile_elevations_m.append(target_elev)
+
+                env_loss = self._environment_loss_db(env_type, dist_km, freq_ghz)
+                delta_no_diff = delta_eirp_for(dist_km, 0.0, env_loss)
+                if delta_no_diff < red_min_db:
+                    # Further points on the same ray can only have lower FSPL margin.
+                    break
+
+                target_height = target_elev + rx_height_m
+                allowed_diffraction_db = max(0.0, delta_no_diff - red_min_db)
+                diffraction = profile_diffraction(
+                    profile_distances_km,
+                    profile_elevations_m,
+                    start_total_height_m=base_height,
+                    end_total_height_m=target_height,
+                    freq_ghz=freq_ghz,
+                    use_fresnel=True,
+                    fresnel_factor=fresnel_factor,
+                    earth_radius_m=earth_radius_m,
+                    obstruction_grace_m=obstruction_grace_m,
+                    max_total_loss_db=allowed_diffraction_db,
+                )
+                if diffraction.blocked:
+                    continue
+
+                delta_eirp = delta_eirp_for(dist_km, diffraction.diffraction_loss_db, env_loss)
+                coverage_class = 0
+                if delta_eirp >= green_min_db:
+                    coverage_class = 3
+                elif delta_eirp >= yellow_min_db:
+                    coverage_class = 2
+                elif delta_eirp >= red_min_db:
+                    coverage_class = 1
+                if coverage_class <= 0:
+                    continue
+
+                global_i = int(round((x_km / step_km) + center))
+                global_j = int(round(center - (y_km / step_km)))
+                if global_i == prev_i and global_j == prev_j:
+                    continue
+                prev_i = global_i
+                prev_j = global_j
+                if global_i < 0 or global_i >= size or global_j < 0 or global_j >= size:
+                    continue
+                set_class(global_i, global_j, coverage_class)
+
+            processed_chunks += 1
+            if on_progress is not None:
+                on_progress(
+                    {
+                        "stage": "raster",
+                        "total_chunks": total_chunks,
+                        "done_chunks": processed_chunks,
+                    }
+                )
+
+        def compute_tile(tile_x: int, tile_y: int, tile_w: int, tile_h: int) -> dict | None:
+            tile_pad = 2
+            render_w = tile_w + (2 * tile_pad)
+            render_h = tile_h + (2 * tile_pad)
+            image = Image.new("RGBA", (render_w, render_h), (0, 0, 0, 0))
+            pixels = image.load()
+            tile_has_samples = False
+            class_colors = {
+                1: (255, 23, 68, 160),
+                2: (255, 208, 0, 160),
+                3: (0, 200, 83, 160),
+            }
+
+            for j in range(render_h):
+                if cancel_event is not None and cancel_event.is_set():
+                    return None
+                global_j = tile_y + j - tile_pad
+                if global_j < 0 or global_j >= size:
+                    continue
+                if global_j < j_min or global_j > j_max:
+                    continue
+                class_row = coverage_classes[global_j]
+                for i in range(render_w):
+                    if cancel_event is not None and cancel_event.is_set():
+                        return None
+                    global_i = tile_x + i - tile_pad
+                    if global_i < 0 or global_i >= size:
+                        continue
+                    if global_i < i_min or global_i > i_max:
+                        continue
+                    coverage_class = class_row[global_i]
+                    if coverage_class <= 0:
+                        continue
+                    pixels[i, j] = class_colors.get(coverage_class, (0, 0, 0, 0))
+                    tile_has_samples = True
+            if not tile_has_samples:
+                return None
+            if ImageFilter is not None:
+                image = image.filter(ImageFilter.GaussianBlur(radius=1.0))
+            if tile_pad > 0:
+                image = image.crop((tile_pad, tile_pad, tile_pad + tile_w, tile_pad + tile_h))
+            if image.getbbox() is None:
+                return None
+            buffer = io.BytesIO()
+            image.save(buffer, format="PNG")
+            data_url = "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
+            return {
+                "data_url": data_url,
+                "bounds": tile_bounds(tile_x, tile_y, tile_w, tile_h),
+            }
+        any_tiles = False
         for tile_x, tile_y, tile_w, tile_h in tiles:
             if cancel_event is not None and cancel_event.is_set():
                 return False
@@ -3081,6 +3306,7 @@ class MainWindow(QMainWindow):
     ) -> list | None:
         if cancel_event is not None and cancel_event.is_set():
             return None
+        model = self._propagation_model
         freq_ghz = antenna.frequency_ghz
         if freq_ghz is None or freq_ghz <= 0:
             return None
@@ -3102,9 +3328,9 @@ class MainWindow(QMainWindow):
             term = (fspl_max - 92.45 - (20.0 * log10(freq_ghz))) / 20.0
             return 10 ** term
 
-        green_range = range_for_delta(5.0)
-        yellow_range = range_for_delta(0.0)
-        red_range = range_for_delta(-5.0)
+        green_range = range_for_delta(model.green_threshold_db)
+        yellow_range = range_for_delta(model.yellow_threshold_db)
+        red_range = range_for_delta(model.red_threshold_db)
         if green_range is None or yellow_range is None or red_range is None:
             return None
 
@@ -3174,8 +3400,8 @@ class MainWindow(QMainWindow):
             bands.append({"color": "#22c55e", "latlngs": green_points})
         return bands if bands else None
 
-    @staticmethod
     def _radio_horizon_limit_km(
+        self,
         antenna: AntennaParams,
         site_elevation_m: float | None = None,
         default_rx_height_m: float = 2.0,
@@ -3187,8 +3413,9 @@ class MainWindow(QMainWindow):
         rx_height = antenna.rx_height_m if antenna.rx_height_m is not None else default_rx_height_m
         if rx_height < 0:
             rx_height = 0.0
-        horizon_km = 3.57 * (sqrt(tx_height + ground_m) + sqrt(rx_height))
-        return horizon_km + 10.0
+        tx_total_m = tx_height + ground_m
+        rx_total_m = rx_height
+        return self._propagation_model.radio_horizon_limit_km(tx_total_m, rx_total_m)
 
     def _coverage_los_distances(
         self,
@@ -3200,7 +3427,7 @@ class MainWindow(QMainWindow):
         site_elevation: float | None = None,
         allowed_diffraction_db: float = 0.0,
         use_fresnel: bool = True,
-        obstruction_grace_m: float = 20.0,
+        obstruction_grace_m: float | None = None,
         cancel_event: Event | None = None,
     ) -> list[tuple[int, float]] | None:
         if cancel_event is not None and cancel_event.is_set():
@@ -3217,6 +3444,10 @@ class MainWindow(QMainWindow):
         if rx_height_m is None:
             rx_height_m = 2.0
         freq_ghz = antenna.frequency_ghz
+        model = self._propagation_model
+        model_obstruction_grace_m = (
+            model.obstruction_grace_m if obstruction_grace_m is None else obstruction_grace_m
+        )
         step_km = max(0.2, range_km / 12)
         sample_distances = []
         dist_cursor = step_km
@@ -3270,7 +3501,9 @@ class MainWindow(QMainWindow):
                     end_total_height_m=target_height,
                     freq_ghz=freq_ghz,
                     use_fresnel=use_fresnel,
-                    obstruction_grace_m=obstruction_grace_m,
+                    fresnel_factor=model.fresnel_factor,
+                    earth_radius_m=model.effective_earth_radius_m(),
+                    obstruction_grace_m=model_obstruction_grace_m,
                     max_total_loss_db=allowed_diffraction_db,
                 )
                 if diffraction.blocked or diffraction.diffraction_loss_db > allowed_diffraction_db:
@@ -3313,32 +3546,28 @@ class MainWindow(QMainWindow):
         cancel_event: Event | None = None,
         on_progress=None,
     ) -> list[array] | None:
-        rows: list[array] = []
-        nan = float("nan")
         total_rows = len(lat_values)
         if on_progress is not None and total_rows > 0:
             on_progress({"stage": "dem_init", "total_rows": total_rows, "done_rows": 0})
         notify_step = max(1, total_rows // 50) if total_rows > 0 else 1
-        for lat_value in lat_values:
-            if cancel_event is not None and cancel_event.is_set():
-                return None
-            row = array("f")
-            for lon_value in lon_values:
-                if cancel_event is not None and cancel_event.is_set():
-                    return None
-                elev = self._elevation.get_elevation(lat_value, lon_value)
-                row.append(float(elev) if elev is not None else nan)
-            rows.append(row)
+
+        def emit_row_progress(done_rows: int, rows_count: int) -> None:
             if on_progress is not None:
-                done_rows = len(rows)
                 if done_rows == total_rows or (done_rows % notify_step) == 0:
                     on_progress(
                         {
                             "stage": "dem",
-                            "total_rows": total_rows,
+                            "total_rows": rows_count,
                             "done_rows": done_rows,
                         }
                     )
+
+        rows = self._elevation.get_elevations_grid(
+            lat_values,
+            lon_values,
+            cancel_event=cancel_event,
+            on_progress=emit_row_progress,
+        )
         return rows
 
     @staticmethod

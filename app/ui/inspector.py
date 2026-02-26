@@ -7,13 +7,18 @@ from PySide6.QtCore import Signal, QLocale, QSignalBlocker, Qt
 from PySide6.QtGui import QDoubleValidator, QValidator
 from PySide6.QtWidgets import (
     QComboBox,
+    QDialog,
     QFormLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QMenu,
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QTextEdit,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -88,6 +93,101 @@ ANTENNA_TYPE_DEFAULTS: dict[str, dict[str, float]] = {
 }
 
 
+class AntennaHistoryDialog(QDialog):
+    def __init__(self, entries: list[dict], parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Історія розрахунків антени")
+        self.resize(760, 460)
+        self._entries = entries
+        self._selected_params: dict | None = None
+
+        self._list = QListWidget(self)
+        self._list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._list.customContextMenuRequested.connect(self._show_context_menu)
+        self._list.currentRowChanged.connect(self._show_details)
+
+        self._details = QTextEdit(self)
+        self._details.setReadOnly(True)
+
+        close_btn = QPushButton("Закрити", self)
+        close_btn.clicked.connect(self.reject)
+
+        body = QHBoxLayout()
+        body.addWidget(self._list, 2)
+        body.addWidget(self._details, 3)
+
+        layout = QVBoxLayout(self)
+        layout.addLayout(body)
+        layout.addWidget(close_btn)
+        self.setLayout(layout)
+
+        self._populate()
+
+    def selected_params(self) -> dict | None:
+        return self._selected_params
+
+    def _populate(self) -> None:
+        self._list.clear()
+        for entry in reversed(self._entries):
+            timestamp = str(entry.get("timestamp_utc") or "—")
+            summary = str(entry.get("summary") or "Без підсумку")
+            item = QListWidgetItem(f"{timestamp} | {summary}")
+            item.setData(Qt.ItemDataRole.UserRole, entry)
+            self._list.addItem(item)
+        if self._list.count() > 0:
+            self._list.setCurrentRow(0)
+
+    def _show_details(self, row: int) -> None:
+        if row < 0:
+            self._details.clear()
+            return
+        item = self._list.item(row)
+        entry = item.data(Qt.ItemDataRole.UserRole) if item is not None else None
+        if not isinstance(entry, dict):
+            self._details.clear()
+            return
+        lines: list[str] = []
+        lines.append(f"Час: {entry.get('timestamp_utc', '—')}")
+        lines.append(f"Підсумок: {entry.get('summary', '—')}")
+        lines.append("")
+        lines.append("Глобальні параметри:")
+        global_data = entry.get("global")
+        if isinstance(global_data, dict):
+            for key, value in global_data.items():
+                lines.append(f"  {key}: {value}")
+        lines.append("")
+        lines.append("Параметри сайту:")
+        site_data = entry.get("site")
+        if isinstance(site_data, dict):
+            for key, value in site_data.items():
+                lines.append(f"  {key}: {value}")
+        lines.append("")
+        lines.append("Параметри антени:")
+        antenna_data = entry.get("antenna")
+        if isinstance(antenna_data, dict):
+            for key, value in antenna_data.items():
+                lines.append(f"  {key}: {value}")
+        self._details.setPlainText("\n".join(lines))
+
+    def _show_context_menu(self, pos) -> None:
+        item = self._list.itemAt(pos)
+        if item is None:
+            return
+        menu = QMenu(self)
+        apply_action = menu.addAction("Застосувати до цієї антени")
+        chosen = menu.exec(self._list.mapToGlobal(pos))
+        if chosen != apply_action:
+            return
+        entry = item.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(entry, dict):
+            return
+        antenna_data = entry.get("antenna")
+        if not isinstance(antenna_data, dict):
+            return
+        self._selected_params = antenna_data
+        self.accept()
+
+
 class AntennaBlock(QWidget):
     apply_requested = Signal(str, dict)
     delete_requested = Signal(str)
@@ -99,6 +199,7 @@ class AntennaBlock(QWidget):
         self.antenna_id = antenna.id if antenna else uuid4().hex[:8]
         self._index = index
         self._applied = antenna.applied if antenna else False
+        self._calc_history: list[dict] = list(antenna.calc_history) if antenna else []
         self._is_valid = True
         self._initializing = True
         self._field_error_labels: dict[QLineEdit, QLabel] = {}
@@ -165,11 +266,13 @@ class AntennaBlock(QWidget):
         self._calc_fspl = QLineEdit(self)
         self._calc_required = QLineEdit(self)
         self._calc_ok = QLineEdit(self)
+        self._calc_result = QLineEdit(self)
 
         self._calc_fspl.setReadOnly(True)
         self._calc_required.setReadOnly(True)
         self._calc_required.setVisible(False)
         self._calc_ok.setReadOnly(True)
+        self._calc_result.setReadOnly(True)
 
         az_validator = QDoubleValidator(0.0, 360.0, 1, self)
         az_validator.setLocale(QLocale.c())
@@ -244,6 +347,7 @@ class AntennaBlock(QWidget):
         label_calc_distance = QLabel("Потрібна дистанція (км):")
         label_calc_fspl = QLabel("Втрати FSPL (дБ):")
         label_calc_ok = QLabel("EIRP OK:")
+        label_calc_result = QLabel("Результат покриття:")
 
         label_rx_sens.setToolTip("Параметр береться зі специфікації пристрою (RX sensitivity).")
         label_channel_width.setToolTip(
@@ -286,6 +390,7 @@ class AntennaBlock(QWidget):
             "Затухання сигналу у вільному просторі (Free Space Path Loss) на введеній дистанції."
         )
         label_calc_ok.setToolTip("EIRP OK, якщо потужність передавача достатня для покриття дистанції.")
+        label_calc_result.setToolTip("Останній збережений результат розрахунку покриття для цієї антени.")
 
         form.addRow(label_preset, self._preset)
         form.addRow(QLabel("Тип антени:"), self._antenna_type)
@@ -337,6 +442,7 @@ class AntennaBlock(QWidget):
         add_error(self._calc_distance, "Діапазон 0.1–300 км.")
         form.addRow(label_calc_fspl, self._calc_fspl)
         form.addRow(label_calc_ok, self._calc_ok)
+        form.addRow(label_calc_result, self._calc_result)
 
         self._apply_btn = QPushButton("Застосувати антену", self)
         self._apply_btn.clicked.connect(self._emit_apply)
@@ -345,6 +451,15 @@ class AntennaBlock(QWidget):
         self._copy_btn = QPushButton("Копіювати антену", self)
         self._copy_btn.clicked.connect(self._emit_copy)
         form.addRow(self._copy_btn)
+
+        self._history_btn = QPushButton("Історія", self)
+        self._history_btn.clicked.connect(self._open_history)
+        self._history_btn.setEnabled(bool(self._calc_history))
+        self._history_btn.setToolTip(
+            "Журнал розрахунків для цієї антени.\n"
+            "Правий клік по запису: застосувати збережені параметри до поточної антени."
+        )
+        form.addRow(self._history_btn)
 
         self._delete_btn = QPushButton("Видалити антену", self)
         self._delete_btn.clicked.connect(self._emit_delete)
@@ -413,6 +528,7 @@ class AntennaBlock(QWidget):
             self._required_sinr.setText("" if antenna.required_sinr_db is None else str(antenna.required_sinr_db))
             self._losses.setText("" if antenna.misc_losses_db is None else str(antenna.misc_losses_db))
             self._margin.setText("" if antenna.link_margin_db is None else str(antenna.link_margin_db))
+            self._calc_result.setText(antenna.calc_result_text or "")
             self._update_eirp_calculator()
             if antenna.azimuth_deg is None or antenna.beamwidth_deg is None:
                 self._apply_antenna_type_defaults(force=False)
@@ -510,8 +626,56 @@ class AntennaBlock(QWidget):
             "required_sinr_db": float(self._required_sinr.text()) if self._required_sinr.text().strip() else None,
             "misc_losses_db": float(self._losses.text()) if self._losses.text().strip() else None,
             "link_margin_db": float(self._margin.text()) if self._margin.text().strip() else None,
+            "calc_result_text": self._calc_result.text().strip() or None,
+            "calc_history": list(self._calc_history),
             "applied": self._applied,
         }
+
+    def set_calc_result_text(self, text: str | None) -> None:
+        self._calc_result.setText((text or "").strip())
+
+    def set_calc_history(self, history: list[dict] | None) -> None:
+        self._calc_history = list(history) if isinstance(history, list) else []
+        self._history_btn.setEnabled(bool(self._calc_history))
+
+    def _open_history(self) -> None:
+        if not self._calc_history:
+            return
+        dialog = AntennaHistoryDialog(self._calc_history, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        params = dialog.selected_params()
+        if not isinstance(params, dict):
+            return
+        self._apply_history_params(params)
+
+    def _apply_history_params(self, params: dict) -> None:
+        antenna_type = str(params.get("antenna_type") or "")
+        idx = self._antenna_type.findText(antenna_type)
+        if idx >= 0:
+            self._antenna_type.setCurrentIndex(idx)
+        self._set_float_field(self._azimuth, params.get("azimuth_deg"), max_precision=1)
+        self._set_float_field(self._beamwidth, params.get("beamwidth_deg"), max_precision=1)
+        self._set_float_field(self._gain, params.get("gain_dbi"), max_precision=1)
+        self._set_float_field(self._height, params.get("height_m"))
+        freq_ghz = params.get("frequency_ghz")
+        if isinstance(freq_ghz, (float, int)):
+            self._set_float_field(self._frequency, float(freq_ghz) * 1000.0, max_precision=3)
+        self._set_float_field(self._tx_power, params.get("tx_power_dbm"))
+        self._set_float_field(self._rx_gain, params.get("rx_gain_dbi"), max_precision=1)
+        self._set_float_field(self._rx_height, params.get("rx_height_m"))
+        self._set_float_field(self._rx_sens, params.get("rx_sensitivity_dbm"))
+        self._set_float_field(self._channel_width, params.get("channel_width_mhz"), max_precision=4)
+        self._set_float_field(self._noise_figure, params.get("noise_figure_db"))
+        self._set_float_field(self._required_sinr, params.get("required_sinr_db"))
+        self._set_float_field(self._losses, params.get("misc_losses_db"))
+        self._set_float_field(self._margin, params.get("link_margin_db"))
+        mcs_value = params.get("mcs")
+        mcs_idx = self._mcs.findData(mcs_value)
+        if mcs_idx >= 0:
+            self._mcs.setCurrentIndex(mcs_idx)
+        self._validate_inputs()
+        self._update_eirp_calculator()
 
     def _update_eirp_calculator(self) -> None:
         freq_text = self._frequency.text().strip()
@@ -1046,6 +1210,22 @@ class InspectorPanel(QWidget):
             return
         all_valid = all(block.is_valid() for block in self._antenna_blocks)
         self._apply_all_antennas_btn.setEnabled(all_valid)
+
+    def set_antenna_calc_result(self, site_id: str, antenna_id: str, text: str | None) -> None:
+        if self._current_site_id != site_id:
+            return
+        block = next((b for b in self._antenna_blocks if b.antenna_id == antenna_id), None)
+        if block is None:
+            return
+        block.set_calc_result_text(text)
+
+    def set_antenna_calc_history(self, site_id: str, antenna_id: str, history: list[dict] | None) -> None:
+        if self._current_site_id != site_id:
+            return
+        block = next((b for b in self._antenna_blocks if b.antenna_id == antenna_id), None)
+        if block is None:
+            return
+        block.set_calc_history(history)
 
     def set_site_elevation(self, elevation_m: float | None, available: bool = True) -> None:
         if elevation_m is None:

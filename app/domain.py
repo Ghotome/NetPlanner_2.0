@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 
@@ -108,6 +108,8 @@ class AntennaParams:
     misc_losses_db: Optional[float] = None
     link_margin_db: Optional[float] = None
     mcs: Optional[str] = None
+    calc_result_text: Optional[str] = None
+    calc_history: List[Dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass

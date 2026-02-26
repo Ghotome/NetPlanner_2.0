@@ -1825,7 +1825,7 @@ class MainWindow(QMainWindow):
             antenna_snapshot.name or "Антена",
         )
         self.monitoring_panel.add_event(
-            f"[Покриття] Розрахунок... {site_snapshot.name}/{antenna_snapshot.name or antenna_snapshot.id}: "
+            f"[Покриття] Розрахунок: {site_snapshot.name}/{antenna_snapshot.name or antenna_snapshot.id}: "
             f"{self._propagation_model.short_label()}"
         )
         self._set_busy("Розрахунок покриття…")

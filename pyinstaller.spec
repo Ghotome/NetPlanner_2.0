@@ -1,5 +1,5 @@
-# Portable build for Ubuntu (PyInstaller)
-# Build: pyinstaller -y pyinstaller.spec
+# Legacy single-file PyInstaller build.
+# Linux packaging now uses pyinstaller-linux.spec for onedir AppImage/DEB builds.
 
 from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, collect_submodules
 

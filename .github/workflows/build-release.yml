@@ -20,6 +20,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
       sha: ${{ steps.version.outputs.sha }}
+      has_appimagetool_aarch64: ${{ steps.tools.outputs.has_appimagetool_aarch64 }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -54,6 +55,17 @@ jobs:
             VERSION="0.0.0"
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "sha=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+      - id: tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f tools/appimagetool-aarch64.AppImage ] && [ -f tools/appimagetool-aarch64.AppImage.sha256 ]; then
+            echo "has_appimagetool_aarch64=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_appimagetool_aarch64=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping aarch64 AppImage build. Vendored tools/appimagetool-aarch64.AppImage (+ .sha256) not found."
+          fi
 
   windows:
     needs: prepare
@@ -66,8 +78,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install -U pip
-          python -m pip install -r requirements.txt
-          python -m pip install pyinstaller
+          python -m pip install -c constraints/build.txt ".[build]"
       - name: Prepare Windows icon
         shell: cmd
         run: >
@@ -84,9 +95,34 @@ jobs:
           --collect-data PySide6
           --collect-data PySide6.QtWebEngineCore
           --collect-data PySide6.QtWebEngineWidgets
-          --collect-submodules PySide6
-          --collect-submodules PySide6.QtWebEngineCore
-          --collect-submodules PySide6.QtWebEngineWidgets
+          --collect-binaries PySide6
+          --collect-binaries PySide6.QtWebEngineCore
+          --collect-binaries PySide6.QtWebEngineWidgets
+          --hidden-import PySide6.QtCore
+          --hidden-import PySide6.QtGui
+          --hidden-import PySide6.QtWidgets
+          --hidden-import PySide6.QtWebChannel
+          --hidden-import PySide6.QtWebEngineCore
+          --hidden-import PySide6.QtWebEngineWidgets
+          --exclude-module PySide6.Qt3DAnimation
+          --exclude-module PySide6.Qt3DCore
+          --exclude-module PySide6.Qt3DExtras
+          --exclude-module PySide6.Qt3DInput
+          --exclude-module PySide6.Qt3DLogic
+          --exclude-module PySide6.Qt3DRender
+          --exclude-module PySide6.QtBluetooth
+          --exclude-module PySide6.QtCharts
+          --exclude-module PySide6.QtMultimedia
+          --exclude-module PySide6.QtMultimediaWidgets
+          --exclude-module PySide6.QtPdf
+          --exclude-module PySide6.QtPositioning
+          --exclude-module PySide6.QtQml
+          --exclude-module PySide6.QtQuick
+          --exclude-module PySide6.QtQuick3D
+          --exclude-module PySide6.QtQuickControls2
+          --exclude-module PySide6.QtQuickWidgets
+          --exclude-module PySide6.QtSvg
+          --exclude-module PySide6.QtSvgWidgets
           app\\main.py
       - name: Package artifact
         run: |
@@ -96,41 +132,102 @@ jobs:
           name: NetPlanner-windows-${{ needs.prepare.outputs.version }}
           path: NetPlanner-windows-${{ needs.prepare.outputs.version }}.zip
 
-  ubuntu:
+  ubuntu_deb:
     needs: prepare
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-20.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Install system deps
+      - name: Install RPM tooling
         run: |
           sudo apt-get update
-          sudo apt-get install -y imagemagick libfuse2
+          sudo apt-get install -y rpm
+      - name: Build Linux dist
+        run: |
+          scripts/build_linux_dist.sh
       - name: Build DEB
         run: |
-          VERSION=${{ needs.prepare.outputs.version }} scripts/build_deb.sh
-      - name: Build AppImage
+          NETPLANNER_SKIP_BUILD=1 VERSION=${{ needs.prepare.outputs.version }} scripts/build_deb.sh
+      - name: Build RPM
         run: |
-          scripts/build_appimage.sh
+          NETPLANNER_SKIP_BUILD=1 VERSION=${{ needs.prepare.outputs.version }} scripts/build_rpm.sh
       - name: Upload DEB
         uses: actions/upload-artifact@v4
         with:
           name: NetPlanner-ubuntu-deb-${{ needs.prepare.outputs.version }}
           path: build/deb/*.deb
+      - name: Upload RPM
+        uses: actions/upload-artifact@v4
+        with:
+          name: NetPlanner-ubuntu-rpm-${{ needs.prepare.outputs.version }}
+          path: build/rpm/rpmbuild/RPMS/*/*.rpm
+  ubuntu_appimage_x86_64:
+    needs: prepare
+    runs-on: ubuntu-20.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Build Linux dist
+        run: |
+          scripts/build_linux_dist.sh
+      - name: Build AppImage
+        run: |
+          NETPLANNER_SKIP_BUILD=1 APPIMAGE_ARCH=x86_64 APPIMAGETOOL_ARCH=x86_64 scripts/build_appimage.sh
+      - name: Build portable tar.gz
+        run: |
+          NETPLANNER_SKIP_BUILD=1 PORTABLE_ARCH=x86_64 scripts/build_tarball.sh
       - name: Upload AppImage
         uses: actions/upload-artifact@v4
         with:
-          name: NetPlanner-ubuntu-appimage-${{ needs.prepare.outputs.version }}
-          path: NetPlanner-*.AppImage
+          name: NetPlanner-ubuntu-appimage-x86_64-${{ needs.prepare.outputs.version }}
+          path: NetPlanner-x86_64.AppImage
+      - name: Upload portable tar.gz
+        uses: actions/upload-artifact@v4
+        with:
+          name: NetPlanner-ubuntu-portable-x86_64-${{ needs.prepare.outputs.version }}
+          path: build/tar/NetPlanner-portable-x86_64.tar.gz
+  ubuntu_appimage_aarch64:
+    needs: prepare
+    if: ${{ needs.prepare.outputs.has_appimagetool_aarch64 == 'true' }}
+    runs-on: ubuntu-22.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Build Linux dist
+        run: |
+          scripts/build_linux_dist.sh
+      - name: Build AppImage
+        run: |
+          NETPLANNER_SKIP_BUILD=1 APPIMAGE_ARCH=aarch64 APPIMAGETOOL_ARCH=aarch64 scripts/build_appimage.sh
+      - name: Build portable tar.gz
+        run: |
+          NETPLANNER_SKIP_BUILD=1 PORTABLE_ARCH=aarch64 scripts/build_tarball.sh
+      - name: Upload AppImage
+        uses: actions/upload-artifact@v4
+        with:
+          name: NetPlanner-ubuntu-appimage-aarch64-${{ needs.prepare.outputs.version }}
+          path: NetPlanner-aarch64.AppImage
+      - name: Upload portable tar.gz
+        uses: actions/upload-artifact@v4
+        with:
+          name: NetPlanner-ubuntu-portable-aarch64-${{ needs.prepare.outputs.version }}
+          path: build/tar/NetPlanner-portable-aarch64.tar.gz
 
   release:
-    needs: [prepare, windows, ubuntu]
+    needs: [prepare, windows, ubuntu_deb, ubuntu_appimage_x86_64, ubuntu_appimage_aarch64]
     if: >-
-      ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
+      ${{ always()
+          && !contains(needs.*.result, 'failure')
+          && !contains(needs.*.result, 'cancelled')
+          && ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
           || (github.event_name == 'pull_request' && github.event.pull_request.merged == true
-              && github.event.pull_request.base.ref == 'publish') }}
+              && github.event.pull_request.base.ref == 'publish')) }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4

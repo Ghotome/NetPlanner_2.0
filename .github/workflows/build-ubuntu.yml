@@ -6,30 +6,105 @@ on:
     branches: [publish]
 
 jobs:
-  build:
-    runs-on: ubuntu-22.04
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      has_appimagetool_aarch64: ${{ steps.tools.outputs.has_appimagetool_aarch64 }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f tools/appimagetool-aarch64.AppImage ] && [ -f tools/appimagetool-aarch64.AppImage.sha256 ]; then
+            echo "has_appimagetool_aarch64=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_appimagetool_aarch64=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping aarch64 AppImage build. Vendored tools/appimagetool-aarch64.AppImage (+ .sha256) not found."
+          fi
+  deb:
+    needs: prepare
+    runs-on: ubuntu-20.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Install system deps
+      - name: Install RPM tooling
         run: |
           sudo apt-get update
-          sudo apt-get install -y imagemagick libfuse2
+          sudo apt-get install -y rpm
+      - name: Build Linux dist
+        run: |
+          scripts/build_linux_dist.sh
       - name: Build DEB
         run: |
-          VERSION=${{ github.ref_name }} scripts/build_deb.sh
-      - name: Build AppImage
+          NETPLANNER_SKIP_BUILD=1 VERSION=${{ github.ref_name }} scripts/build_deb.sh
+      - name: Build RPM
         run: |
-          scripts/build_appimage.sh
+          NETPLANNER_SKIP_BUILD=1 VERSION=${{ github.ref_name }} scripts/build_rpm.sh
       - name: Upload DEB
         uses: actions/upload-artifact@v4
         with:
           name: NetPlanner-ubuntu-deb
           path: build/deb/*.deb
+      - name: Upload RPM
+        uses: actions/upload-artifact@v4
+        with:
+          name: NetPlanner-ubuntu-rpm
+          path: build/rpm/rpmbuild/RPMS/*/*.rpm
+  appimage_x86_64:
+    needs: prepare
+    runs-on: ubuntu-20.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Build Linux dist
+        run: |
+          scripts/build_linux_dist.sh
+      - name: Build AppImage
+        run: |
+          NETPLANNER_SKIP_BUILD=1 APPIMAGE_ARCH=x86_64 APPIMAGETOOL_ARCH=x86_64 scripts/build_appimage.sh
+      - name: Build portable tar.gz
+        run: |
+          NETPLANNER_SKIP_BUILD=1 PORTABLE_ARCH=x86_64 scripts/build_tarball.sh
       - name: Upload AppImage
         uses: actions/upload-artifact@v4
         with:
-          name: NetPlanner-ubuntu-appimage
-          path: NetPlanner-*.AppImage
+          name: NetPlanner-ubuntu-appimage-x86_64
+          path: NetPlanner-x86_64.AppImage
+      - name: Upload portable tar.gz
+        uses: actions/upload-artifact@v4
+        with:
+          name: NetPlanner-ubuntu-portable-x86_64
+          path: build/tar/NetPlanner-portable-x86_64.tar.gz
+  appimage_aarch64:
+    needs: prepare
+    if: ${{ needs.prepare.outputs.has_appimagetool_aarch64 == 'true' }}
+    runs-on: ubuntu-22.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Build Linux dist
+        run: |
+          scripts/build_linux_dist.sh
+      - name: Build AppImage
+        run: |
+          NETPLANNER_SKIP_BUILD=1 APPIMAGE_ARCH=aarch64 APPIMAGETOOL_ARCH=aarch64 scripts/build_appimage.sh
+      - name: Build portable tar.gz
+        run: |
+          NETPLANNER_SKIP_BUILD=1 PORTABLE_ARCH=aarch64 scripts/build_tarball.sh
+      - name: Upload AppImage
+        uses: actions/upload-artifact@v4
+        with:
+          name: NetPlanner-ubuntu-appimage-aarch64
+          path: NetPlanner-aarch64.AppImage
+      - name: Upload portable tar.gz
+        uses: actions/upload-artifact@v4
+        with:
+          name: NetPlanner-ubuntu-portable-aarch64
+          path: build/tar/NetPlanner-portable-aarch64.tar.gz

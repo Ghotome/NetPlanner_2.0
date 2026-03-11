@@ -4,26 +4,58 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-python -m pip install pyinstaller
+normalize_arch() {
+  case "$1" in
+    x86_64|amd64)
+      echo "x86_64"
+      ;;
+    aarch64|arm64)
+      echo "aarch64"
+      ;;
+    *)
+      echo "$1"
+      ;;
+  esac
+}
 
-pyinstaller -y pyinstaller.spec
+if [ "${NETPLANNER_SKIP_BUILD:-0}" != "1" ]; then
+  "$ROOT_DIR/scripts/build_linux_dist.sh"
+fi
 
 APPDIR="$ROOT_DIR/AppDir"
+DIST_DIR="$ROOT_DIR/dist/NetPlanner_2.0"
 rm -rf "$APPDIR"
 mkdir -p \
   "$APPDIR/usr/bin" \
+  "$APPDIR/usr/lib/netplanner/NetPlanner_2.0" \
   "$APPDIR/usr/share/applications" \
   "$APPDIR/usr/share/icons/hicolor/256x256/apps" \
   "$APPDIR/usr/share/icons/hicolor/96x96/apps"
 
-cp "$ROOT_DIR/dist/NetPlanner_2.0" "$APPDIR/usr/bin/NetPlanner_2.0"
+cp -a "$DIST_DIR/." "$APPDIR/usr/lib/netplanner/NetPlanner_2.0/"
+ln -sf ../lib/netplanner/NetPlanner_2.0/NetPlanner_2.0 "$APPDIR/usr/bin/NetPlanner_2.0"
 cat > "$APPDIR/AppRun" <<'EOF'
 #!/usr/bin/env bash
-export QT_QPA_PLATFORM=xcb
-export GDK_BACKEND=x11
-exec "$APPDIR/usr/bin/NetPlanner_2.0" "$@"
+# Force X11/XCB only when explicitly requested at runtime.
+if [ "${NETPLANNER_FORCE_XCB:-0}" = "1" ]; then
+  export QT_QPA_PLATFORM=xcb
+  export GDK_BACKEND=x11
+fi
+
+# Optional fallback for systems where Qt WebEngine cannot initialize GPU/GLX.
+if [ "${NETPLANNER_SOFTWARE_RENDERING:-0}" = "1" ]; then
+  export QT_OPENGL=software
+  export LIBGL_ALWAYS_SOFTWARE=1
+  FLAGS="${QTWEBENGINE_CHROMIUM_FLAGS:-}"
+  EXTRA_FLAGS="--disable-gpu --disable-gpu-compositing"
+  case " ${FLAGS} " in
+    *" --disable-gpu "*) ;;
+    *) FLAGS="${FLAGS:+$FLAGS }$EXTRA_FLAGS" ;;
+  esac
+  export QTWEBENGINE_CHROMIUM_FLAGS="$FLAGS"
+fi
+
+exec "$APPDIR/usr/lib/netplanner/NetPlanner_2.0/NetPlanner_2.0" "$@"
 EOF
 chmod +x "$APPDIR/AppRun"
 
@@ -31,11 +63,17 @@ ICON_PNG_SRC="$ROOT_DIR/app/ui/icons/app_icons/app_icon_96_96.png"
 ICON_PNG_256="$APPDIR/usr/share/icons/hicolor/256x256/apps/netplanner_2.0.png"
 ICON_PNG_96="$APPDIR/usr/share/icons/hicolor/96x96/apps/netplanner_2.0.png"
 
-if command -v convert >/dev/null 2>&1; then
-  convert -background none -resize 256x256 "$ICON_PNG_SRC" "$ICON_PNG_256"
-else
-  cp "$ICON_PNG_SRC" "$ICON_PNG_256"
-fi
+ICON_SRC="$ICON_PNG_SRC" ICON_256="$ICON_PNG_256" python - <<'PY'
+import os
+from pathlib import Path
+
+from PIL import Image
+
+src = Path(os.environ["ICON_SRC"])
+dst = Path(os.environ["ICON_256"])
+with Image.open(src) as img:
+    img.convert("RGBA").resize((256, 256)).save(dst)
+PY
 
 cp "$ICON_PNG_SRC" "$ICON_PNG_96"
 cp "$ICON_PNG_256" "$APPDIR/.DirIcon"
@@ -53,50 +91,38 @@ Terminal=false
 EOF
 cp "$APPDIR/netplanner_2.0.desktop" "$APPDIR/usr/share/applications/netplanner_2.0.desktop"
 
-is_elf() {
-  local file="$1"
-  if [ ! -f "$file" ]; then
-    return 1
-  fi
-  local magic
-  magic="$(head -c 4 "$file" | od -An -t x1 | tr -d ' \n')"
-  [ "$magic" = "7f454c46" ]
-}
+ARCH="$(normalize_arch "${APPIMAGE_ARCH:-$(uname -m)}")"
+APPIMAGETOOL_ARCH="$(normalize_arch "${APPIMAGETOOL_ARCH:-$ARCH}")"
 
-if ! command -v appimagetool >/dev/null 2>&1; then
-  TOOL_DIR="$ROOT_DIR/tools"
-  mkdir -p "$TOOL_DIR"
-  APPIMAGE_TOOL="$TOOL_DIR/appimagetool.AppImage"
-  if [ ! -f "$APPIMAGE_TOOL" ] || ! is_elf "$APPIMAGE_TOOL"; then
-    echo "Downloading appimagetool..."
-    rm -f "$APPIMAGE_TOOL"
-    URLS=(
-      "https://github.com/AppImage/AppImageKit/releases/latest/download/appimagetool-x86_64.AppImage"
-      "https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage"
-    )
-    if command -v curl >/dev/null 2>&1; then
-      for url in "${URLS[@]}"; do
-        curl -L -o "$APPIMAGE_TOOL" "$url" && is_elf "$APPIMAGE_TOOL" && break
-      done
-    elif command -v wget >/dev/null 2>&1; then
-      for url in "${URLS[@]}"; do
-        wget -O "$APPIMAGE_TOOL" "$url" && is_elf "$APPIMAGE_TOOL" && break
-      done
-    else
-      echo "Neither curl nor wget is available. Please install one of them."
-      exit 1
-    fi
-    if ! is_elf "$APPIMAGE_TOOL"; then
-      echo "Failed to download a valid appimagetool AppImage."
-      echo "Please check network access or install appimagetool manually."
-      exit 1
-    fi
-    chmod +x "$APPIMAGE_TOOL"
-  fi
-  export PATH="$TOOL_DIR:$PATH"
-  ln -sf "$APPIMAGE_TOOL" "$TOOL_DIR/appimagetool"
+APPIMAGETOOL=""
+APPIMAGETOOL_SHA256=""
+APPIMAGETOOL_CANDIDATES=("$ROOT_DIR/tools/appimagetool-${APPIMAGETOOL_ARCH}.AppImage")
+if [ "$APPIMAGETOOL_ARCH" = "x86_64" ]; then
+  APPIMAGETOOL_CANDIDATES+=("$ROOT_DIR/tools/appimagetool.AppImage")
 fi
 
-ARCH="$(uname -m)"
-APPIMAGE_EXTRACT_AND_RUN=1 appimagetool "$APPDIR" "$ROOT_DIR/NetPlanner-${ARCH}.AppImage"
+for candidate in "${APPIMAGETOOL_CANDIDATES[@]}"; do
+  sha_candidate="${candidate}.sha256"
+  if [ -f "$candidate" ] && [ -f "$sha_candidate" ]; then
+    APPIMAGETOOL="$candidate"
+    APPIMAGETOOL_SHA256="$sha_candidate"
+    break
+  fi
+done
+
+if [ -z "$APPIMAGETOOL" ] || [ -z "$APPIMAGETOOL_SHA256" ]; then
+  echo "Missing vendored appimagetool for architecture: $APPIMAGETOOL_ARCH"
+  echo "Expected one of:"
+  echo "  $ROOT_DIR/tools/appimagetool-${APPIMAGETOOL_ARCH}.AppImage"
+  if [ "$APPIMAGETOOL_ARCH" = "x86_64" ]; then
+    echo "  $ROOT_DIR/tools/appimagetool.AppImage"
+  fi
+  echo "with a matching .sha256 file."
+  exit 1
+fi
+
+sha256sum -c "$APPIMAGETOOL_SHA256"
+chmod +x "$APPIMAGETOOL"
+
+ARCH="$ARCH" APPIMAGE_EXTRACT_AND_RUN=1 "$APPIMAGETOOL" "$APPDIR" "$ROOT_DIR/NetPlanner-${ARCH}.AppImage"
 echo "AppImage ready: NetPlanner-${ARCH}.AppImage"

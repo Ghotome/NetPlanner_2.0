@@ -98,31 +98,7 @@ jobs:
           --collect-binaries PySide6
           --collect-binaries PySide6.QtWebEngineCore
           --collect-binaries PySide6.QtWebEngineWidgets
-          --hidden-import PySide6.QtCore
-          --hidden-import PySide6.QtGui
-          --hidden-import PySide6.QtWidgets
-          --hidden-import PySide6.QtWebChannel
-          --hidden-import PySide6.QtWebEngineCore
-          --hidden-import PySide6.QtWebEngineWidgets
-          --exclude-module PySide6.Qt3DAnimation
-          --exclude-module PySide6.Qt3DCore
-          --exclude-module PySide6.Qt3DExtras
-          --exclude-module PySide6.Qt3DInput
-          --exclude-module PySide6.Qt3DLogic
-          --exclude-module PySide6.Qt3DRender
-          --exclude-module PySide6.QtBluetooth
-          --exclude-module PySide6.QtCharts
-          --exclude-module PySide6.QtMultimedia
-          --exclude-module PySide6.QtMultimediaWidgets
-          --exclude-module PySide6.QtPdf
-          --exclude-module PySide6.QtPositioning
-          --exclude-module PySide6.QtQml
-          --exclude-module PySide6.QtQuick
-          --exclude-module PySide6.QtQuick3D
-          --exclude-module PySide6.QtQuickControls2
-          --exclude-module PySide6.QtQuickWidgets
-          --exclude-module PySide6.QtSvg
-          --exclude-module PySide6.QtSvgWidgets
+          --collect-submodules PySide6
           app\\main.py
       - name: Package artifact
         run: |

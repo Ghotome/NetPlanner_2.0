@@ -34,7 +34,6 @@ STAGE_DIR="$RPM_ROOT/stage/${STAGE_NAME}"
 SOURCES_DIR="$TOPDIR/SOURCES"
 SPECS_DIR="$TOPDIR/SPECS"
 RPMS_DIR="$TOPDIR/RPMS"
-FILELIST_PATH="$SOURCES_DIR/${PKG_NAME}.files"
 SPEC_PATH="$SPECS_DIR/${PKG_NAME}.spec"
 CHANGELOG_DATE="$(LC_ALL=C date '+%a %b %d %Y')"
 
@@ -112,11 +111,6 @@ EOF
 
 tar -C "$RPM_ROOT/stage" -czf "$SOURCES_DIR/${PKG_NAME}-${VERSION}.tar.gz" "$STAGE_NAME"
 
-(
-  cd "$STAGE_DIR"
-  find usr \( -type f -o -type l \) -print | LC_ALL=C sort | sed 's|^|/|' > "$FILELIST_PATH"
-)
-
 cat > "$SPEC_PATH" <<EOF
 %global debug_package %{nil}
 
@@ -144,7 +138,14 @@ rm -rf %{buildroot}
 mkdir -p %{buildroot}
 cp -a usr %{buildroot}/
 
-%files -f ${FILELIST_PATH}
+%files
+%dir /usr/lib/netplanner
+/usr/bin/netplanner
+/usr/lib/netplanner/NetPlanner_2.0
+/usr/share/applications/netplanner_2.0.desktop
+/usr/share/icons/hicolor/96x96/apps/netplanner_2.0.png
+/usr/share/icons/hicolor/256x256/apps/netplanner_2.0.png
+%license /usr/share/licenses/netplanner/LICENSE
 
 %changelog
 * ${CHANGELOG_DATE} NetPlanner <support@example.com> - ${VERSION}-${RELEASE}

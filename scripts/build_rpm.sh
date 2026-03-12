@@ -3,26 +3,13 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
-
-normalize_arch() {
-  case "$1" in
-    x86_64|amd64)
-      echo "x86_64"
-      ;;
-    aarch64|arm64)
-      echo "aarch64"
-      ;;
-    *)
-      echo "$1"
-      ;;
-  esac
-}
+source "$ROOT_DIR/scripts/release_helpers.sh"
 
 if [ "${NETPLANNER_SKIP_BUILD:-0}" != "1" ]; then
   "$ROOT_DIR/scripts/build_linux_dist.sh"
 fi
 
-VERSION="${VERSION:-2.0.0}"
+VERSION="${VERSION:-$(project_version)}"
 RELEASE="${RELEASE:-1}"
 ARCH="$(normalize_arch "${RPM_ARCH:-$(uname -m)}")"
 PKG_NAME="netplanner"
@@ -36,8 +23,9 @@ SPECS_DIR="$TOPDIR/SPECS"
 RPMS_DIR="$TOPDIR/RPMS"
 SPEC_PATH="$SPECS_DIR/${PKG_NAME}.spec"
 CHANGELOG_DATE="$(LC_ALL=C date '+%a %b %d %Y')"
+OUTPUT_PATH="$RPM_ROOT/$(asset_basename "$VERSION" rpm "$ARCH").rpm"
 
-rm -rf "$TOPDIR" "$RPM_ROOT/stage"
+rm -rf "$TOPDIR" "$RPM_ROOT/stage" "$OUTPUT_PATH"
 mkdir -p \
   "$STAGE_DIR/usr/bin" \
   "$STAGE_DIR/usr/lib/netplanner/NetPlanner_2.0" \
@@ -153,4 +141,6 @@ cp -a usr %{buildroot}/
 EOF
 
 rpmbuild --define "_topdir $TOPDIR" --target "$ARCH" -bb "$SPEC_PATH"
-echo "RPM ready: $(find "$RPMS_DIR" -type f -name '*.rpm' | head -n1)"
+RPM_FILE="$(find "$RPMS_DIR" -type f -name '*.rpm' | head -n1)"
+mv "$RPM_FILE" "$OUTPUT_PATH"
+echo "RPM ready: $OUTPUT_PATH"

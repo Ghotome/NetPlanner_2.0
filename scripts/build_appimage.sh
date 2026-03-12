@@ -3,20 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
-
-normalize_arch() {
-  case "$1" in
-    x86_64|amd64)
-      echo "x86_64"
-      ;;
-    aarch64|arm64)
-      echo "aarch64"
-      ;;
-    *)
-      echo "$1"
-      ;;
-  esac
-}
+source "$ROOT_DIR/scripts/release_helpers.sh"
 
 if [ "${NETPLANNER_SKIP_BUILD:-0}" != "1" ]; then
   "$ROOT_DIR/scripts/build_linux_dist.sh"
@@ -93,6 +80,8 @@ cp "$APPDIR/netplanner_2.0.desktop" "$APPDIR/usr/share/applications/netplanner_2
 
 ARCH="$(normalize_arch "${APPIMAGE_ARCH:-$(uname -m)}")"
 APPIMAGETOOL_ARCH="$(normalize_arch "${APPIMAGETOOL_ARCH:-$ARCH}")"
+VERSION="${VERSION:-$(project_version)}"
+OUTPUT_PATH="$ROOT_DIR/$(asset_basename "$VERSION" appimage "$ARCH").AppImage"
 
 APPIMAGETOOL=""
 APPIMAGETOOL_SHA256=""
@@ -124,5 +113,5 @@ fi
 sha256sum -c "$APPIMAGETOOL_SHA256"
 chmod +x "$APPIMAGETOOL"
 
-ARCH="$ARCH" APPIMAGE_EXTRACT_AND_RUN=1 "$APPIMAGETOOL" "$APPDIR" "$ROOT_DIR/NetPlanner-${ARCH}.AppImage"
-echo "AppImage ready: NetPlanner-${ARCH}.AppImage"
+ARCH="$ARCH" APPIMAGE_EXTRACT_AND_RUN=1 "$APPIMAGETOOL" "$APPDIR" "$OUTPUT_PATH"
+echo "AppImage ready: $OUTPUT_PATH"

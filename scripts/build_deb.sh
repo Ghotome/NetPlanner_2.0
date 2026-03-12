@@ -3,18 +3,21 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
+source "$ROOT_DIR/scripts/release_helpers.sh"
 
 if [ "${NETPLANNER_SKIP_BUILD:-0}" != "1" ]; then
   "$ROOT_DIR/scripts/build_linux_dist.sh"
 fi
 
-VERSION="${VERSION:-2.0.0}"
-ARCH="$(dpkg --print-architecture 2>/dev/null || echo amd64)"
+VERSION="${VERSION:-$(project_version)}"
+PACKAGE_ARCH="$(normalize_deb_arch "${DEB_ARCH:-$(dpkg --print-architecture 2>/dev/null || uname -m)}")"
+OUTPUT_ARCH="$(normalize_arch "$PACKAGE_ARCH")"
 PKG_NAME="netplanner"
-PKG_DIR="$ROOT_DIR/build/deb/${PKG_NAME}_${VERSION}_${ARCH}"
+PKG_DIR="$ROOT_DIR/build/deb/${PKG_NAME}_${VERSION}_${PACKAGE_ARCH}"
 DIST_DIR="$ROOT_DIR/dist/NetPlanner_2.0"
+OUTPUT_PATH="$ROOT_DIR/build/deb/$(asset_basename "$VERSION" deb "$OUTPUT_ARCH").deb"
 
-rm -rf "$PKG_DIR"
+rm -rf "$PKG_DIR" "$OUTPUT_PATH"
 mkdir -p \
   "$PKG_DIR/DEBIAN" \
   "$PKG_DIR/usr/bin" \
@@ -84,10 +87,10 @@ Package: ${PKG_NAME}
 Version: ${VERSION}
 Section: utils
 Priority: optional
-Architecture: ${ARCH}
+Architecture: ${PACKAGE_ARCH}
 Maintainer: NetPlanner <support@example.com>
 Description: NetPlanner network planning tool
 EOF
 
-dpkg-deb --build "$PKG_DIR"
-echo "DEB ready: ${PKG_DIR}.deb"
+dpkg-deb --build "$PKG_DIR" "$OUTPUT_PATH"
+echo "DEB ready: $OUTPUT_PATH"

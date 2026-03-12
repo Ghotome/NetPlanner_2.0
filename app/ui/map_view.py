@@ -9,6 +9,8 @@ from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtWebEngineCore import QWebEngineSettings, QWebEngineProfile
 from PySide6.QtWebEngineWidgets import QWebEngineView
 
+from app.runtime_paths import ensure_cache_subdir
+
 
 class MapBridge(QObject):
     def __init__(
@@ -234,6 +236,12 @@ class MapView(QWebEngineView):
         profile.setHttpCacheMaximumSize(128 * 1024 * 1024)
         try:
             profile.setHttpCacheType(QWebEngineProfile.HttpCacheType.DiskHttpCache)
+        except Exception:
+            pass
+        try:
+            web_cache_dir = ensure_cache_subdir("webengine")
+            profile.setCachePath(str(web_cache_dir / "http"))
+            profile.setPersistentStoragePath(str(web_cache_dir / "storage"))
         except Exception:
             pass
 

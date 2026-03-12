@@ -44,30 +44,7 @@ cp -a "$DIST_DIR/." "$STAGE_DIR/usr/lib/netplanner/NetPlanner_2.0/"
 chmod 0755 "$STAGE_DIR/usr/lib/netplanner/NetPlanner_2.0/NetPlanner_2.0"
 cp "$ROOT_DIR/LICENSE" "$STAGE_DIR/usr/share/licenses/${PKG_NAME}/LICENSE"
 
-cat > "$STAGE_DIR/usr/bin/netplanner" <<'EOF'
-#!/usr/bin/env bash
-# Force X11/XCB only when explicitly requested at runtime.
-if [ "${NETPLANNER_FORCE_XCB:-0}" = "1" ]; then
-  export QT_QPA_PLATFORM=xcb
-  export GDK_BACKEND=x11
-fi
-
-# Optional fallback for systems where Qt WebEngine cannot initialize GPU/GLX.
-if [ "${NETPLANNER_SOFTWARE_RENDERING:-0}" = "1" ]; then
-  export QT_OPENGL=software
-  export LIBGL_ALWAYS_SOFTWARE=1
-  FLAGS="${QTWEBENGINE_CHROMIUM_FLAGS:-}"
-  EXTRA_FLAGS="--disable-gpu --disable-gpu-compositing"
-  case " ${FLAGS} " in
-    *" --disable-gpu "*) ;;
-    *) FLAGS="${FLAGS:+$FLAGS }$EXTRA_FLAGS" ;;
-  esac
-  export QTWEBENGINE_CHROMIUM_FLAGS="$FLAGS"
-fi
-
-exec /usr/lib/netplanner/NetPlanner_2.0/NetPlanner_2.0 "$@"
-EOF
-chmod 0755 "$STAGE_DIR/usr/bin/netplanner"
+write_linux_launcher "$STAGE_DIR/usr/bin/netplanner" '/usr/lib/netplanner/NetPlanner_2.0/NetPlanner_2.0'
 
 ICON_SRC="$ROOT_DIR/app/ui/icons/app_icons/app_icon_96_96.png"
 ICON_256="$STAGE_DIR/usr/share/icons/hicolor/256x256/apps/netplanner_2.0.png"

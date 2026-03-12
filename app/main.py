@@ -8,7 +8,7 @@ def _should_use_software_rendering() -> bool:
         return False
     if os.environ.get("NETPLANNER_SOFTWARE_RENDERING") == "1":
         return True
-    return sys.platform.startswith("linux") and bool(getattr(sys, "frozen", False))
+    return os.environ.get("NETPLANNER_RENDERER_MODE") == "software"
 
 
 def _configure_runtime_environment() -> bool:
@@ -29,9 +29,21 @@ def _configure_runtime_environment() -> bool:
     return use_software_rendering
 
 
+def _mark_startup_ready() -> None:
+    marker = os.environ.get("NETPLANNER_STARTUP_MARKER")
+    if not marker:
+        return
+    try:
+        marker_path = Path(marker)
+        marker_path.parent.mkdir(parents=True, exist_ok=True)
+        marker_path.write_text("ready\n", encoding="utf-8")
+    except Exception:
+        pass
+
+
 def main() -> int:
     use_software_rendering = _configure_runtime_environment()
-    from PySide6.QtCore import QCoreApplication, Qt
+    from PySide6.QtCore import QCoreApplication, Qt, QTimer
     from PySide6.QtGui import QIcon
     from PySide6.QtWidgets import QApplication
 
@@ -49,6 +61,7 @@ def main() -> int:
     if icon_path.exists():
         window.setWindowIcon(QIcon(str(icon_path)))
     window.show()
+    QTimer.singleShot(0, _mark_startup_ready)
     return app.exec()
 
 

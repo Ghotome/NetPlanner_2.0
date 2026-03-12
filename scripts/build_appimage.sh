@@ -21,30 +21,7 @@ mkdir -p \
 
 cp -a "$DIST_DIR/." "$APPDIR/usr/lib/netplanner/NetPlanner_2.0/"
 ln -sf ../lib/netplanner/NetPlanner_2.0/NetPlanner_2.0 "$APPDIR/usr/bin/NetPlanner_2.0"
-cat > "$APPDIR/AppRun" <<'EOF'
-#!/usr/bin/env bash
-# Force X11/XCB only when explicitly requested at runtime.
-if [ "${NETPLANNER_FORCE_XCB:-0}" = "1" ]; then
-  export QT_QPA_PLATFORM=xcb
-  export GDK_BACKEND=x11
-fi
-
-# Optional fallback for systems where Qt WebEngine cannot initialize GPU/GLX.
-if [ "${NETPLANNER_SOFTWARE_RENDERING:-0}" = "1" ]; then
-  export QT_OPENGL=software
-  export LIBGL_ALWAYS_SOFTWARE=1
-  FLAGS="${QTWEBENGINE_CHROMIUM_FLAGS:-}"
-  EXTRA_FLAGS="--disable-gpu --disable-gpu-compositing"
-  case " ${FLAGS} " in
-    *" --disable-gpu "*) ;;
-    *) FLAGS="${FLAGS:+$FLAGS }$EXTRA_FLAGS" ;;
-  esac
-  export QTWEBENGINE_CHROMIUM_FLAGS="$FLAGS"
-fi
-
-exec "$APPDIR/usr/lib/netplanner/NetPlanner_2.0/NetPlanner_2.0" "$@"
-EOF
-chmod +x "$APPDIR/AppRun"
+write_linux_launcher "$APPDIR/AppRun" '$APPDIR/usr/lib/netplanner/NetPlanner_2.0/NetPlanner_2.0'
 
 ICON_PNG_SRC="$ROOT_DIR/app/ui/icons/app_icons/app_icon_96_96.png"
 ICON_PNG_256="$APPDIR/usr/share/icons/hicolor/256x256/apps/netplanner_2.0.png"

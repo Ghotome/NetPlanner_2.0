@@ -22,34 +22,7 @@ rm -rf "$STAGE_ROOT"
 mkdir -p "$PACKAGE_DIR"
 cp -a "$DIST_DIR" "$PACKAGE_DIR/"
 
-cat > "$PACKAGE_DIR/netplanner" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-
-BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-# Force X11/XCB only when explicitly requested at runtime.
-if [ "${NETPLANNER_FORCE_XCB:-0}" = "1" ]; then
-  export QT_QPA_PLATFORM=xcb
-  export GDK_BACKEND=x11
-fi
-
-# Optional fallback for systems where Qt WebEngine cannot initialize GPU/GLX.
-if [ "${NETPLANNER_SOFTWARE_RENDERING:-0}" = "1" ]; then
-  export QT_OPENGL=software
-  export LIBGL_ALWAYS_SOFTWARE=1
-  FLAGS="${QTWEBENGINE_CHROMIUM_FLAGS:-}"
-  EXTRA_FLAGS="--disable-gpu --disable-gpu-compositing"
-  case " ${FLAGS} " in
-    *" --disable-gpu "*) ;;
-    *) FLAGS="${FLAGS:+$FLAGS }$EXTRA_FLAGS" ;;
-  esac
-  export QTWEBENGINE_CHROMIUM_FLAGS="$FLAGS"
-fi
-
-exec "$BASE_DIR/NetPlanner_2.0/NetPlanner_2.0" "$@"
-EOF
-chmod +x "$PACKAGE_DIR/netplanner"
+write_linux_launcher "$PACKAGE_DIR/netplanner" '$BASE_DIR/NetPlanner_2.0/NetPlanner_2.0'
 
 cat > "$PACKAGE_DIR/README.txt" <<'EOF'
 NetPlanner portable Linux bundle
@@ -57,10 +30,13 @@ NetPlanner portable Linux bundle
 Run:
   ./netplanner
 
-Packaged Linux builds use software rendering by default for compatibility.
+Renderer mode is detected automatically on first launch and saved for this machine.
 
-If your system has working GPU/GLX support and you want to force hardware rendering:
+If you want to force hardware rendering:
   NETPLANNER_HARDWARE_RENDERING=1 ./netplanner
+
+If you want to force software rendering:
+  NETPLANNER_SOFTWARE_RENDERING=1 ./netplanner
 EOF
 
 mkdir -p "$ARCHIVE_DIR"

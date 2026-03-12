@@ -12,5 +12,5 @@ AppDir/
 dist/
 build/
 cache/
-*AppImage
+*.AppImage
 *.netproj

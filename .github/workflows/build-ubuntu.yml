@@ -24,7 +24,7 @@ jobs:
           fi
   deb:
     needs: prepare
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -55,7 +55,7 @@ jobs:
           path: build/rpm/rpmbuild/RPMS/*/*.rpm
   appimage_x86_64:
     needs: prepare
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

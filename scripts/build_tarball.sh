@@ -57,8 +57,10 @@ NetPlanner portable Linux bundle
 Run:
   ./netplanner
 
-If Qt WebEngine fails to initialize GPU/GLX on your system, retry with:
-  NETPLANNER_SOFTWARE_RENDERING=1 ./netplanner
+Packaged Linux builds use software rendering by default for compatibility.
+
+If your system has working GPU/GLX support and you want to force hardware rendering:
+  NETPLANNER_HARDWARE_RENDERING=1 ./netplanner
 EOF
 
 mkdir -p "$ARCHIVE_DIR"

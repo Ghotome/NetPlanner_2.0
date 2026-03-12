@@ -19,6 +19,7 @@ def _configure_runtime_environment() -> bool:
         os.environ.setdefault("QT_OPENGL", "software")
         os.environ.setdefault("LIBGL_ALWAYS_SOFTWARE", "1")
         os.environ.setdefault("QT_QUICK_BACKEND", "software")
+        os.environ.setdefault("QT_XCB_GL_INTEGRATION", "none")
         flags = os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "")
         extra_flags = ["--disable-gpu", "--disable-gpu-compositing"]
         for flag in extra_flags:

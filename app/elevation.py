@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Callable, Optional, Sequence
 from urllib.request import urlopen
 
+from app.runtime_paths import ensure_cache_subdir
+
 try:
     from PIL import Image
 except Exception:  # pragma: no cover - optional dependency
@@ -24,7 +26,7 @@ class ElevationProvider:
         tile_cache_size: int = 256,
     ) -> None:
         self.zoom = zoom
-        self.cache_dir = Path(cache_dir or Path(__file__).resolve().parents[1] / "cache" / "elevation")
+        self.cache_dir = Path(cache_dir) if cache_dir is not None else ensure_cache_subdir("elevation")
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.available = Image is not None
         self._tile_cache: OrderedDict[tuple[int, int, int], Image.Image] = OrderedDict()

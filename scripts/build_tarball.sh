@@ -3,31 +3,20 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
-
-normalize_arch() {
-  case "$1" in
-    x86_64|amd64)
-      echo "x86_64"
-      ;;
-    aarch64|arm64)
-      echo "aarch64"
-      ;;
-    *)
-      echo "$1"
-      ;;
-  esac
-}
+source "$ROOT_DIR/scripts/release_helpers.sh"
 
 if [ "${NETPLANNER_SKIP_BUILD:-0}" != "1" ]; then
   "$ROOT_DIR/scripts/build_linux_dist.sh"
 fi
 
 ARCH="$(normalize_arch "${PORTABLE_ARCH:-${APPIMAGE_ARCH:-$(uname -m)}}")"
+VERSION="${VERSION:-$(project_version)}"
 DIST_DIR="$ROOT_DIR/dist/NetPlanner_2.0"
 STAGE_ROOT="$ROOT_DIR/build/tar/stage-${ARCH}"
-PACKAGE_DIR="$STAGE_ROOT/NetPlanner-portable-${ARCH}"
+PACKAGE_NAME="$(asset_basename "$VERSION" portable "$ARCH")"
+PACKAGE_DIR="$STAGE_ROOT/$PACKAGE_NAME"
 ARCHIVE_DIR="$ROOT_DIR/build/tar"
-ARCHIVE_PATH="$ARCHIVE_DIR/NetPlanner-portable-${ARCH}.tar.gz"
+ARCHIVE_PATH="$ARCHIVE_DIR/${PACKAGE_NAME}.tar.gz"
 
 rm -rf "$STAGE_ROOT"
 mkdir -p "$PACKAGE_DIR"
@@ -73,5 +62,5 @@ If Qt WebEngine fails to initialize GPU/GLX on your system, retry with:
 EOF
 
 mkdir -p "$ARCHIVE_DIR"
-tar -C "$STAGE_ROOT" -czf "$ARCHIVE_PATH" "NetPlanner-portable-${ARCH}"
+tar -C "$STAGE_ROOT" -czf "$ARCHIVE_PATH" "$PACKAGE_NAME"
 echo "Portable tarball ready: $ARCHIVE_PATH"

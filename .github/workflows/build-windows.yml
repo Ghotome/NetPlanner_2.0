@@ -2,11 +2,34 @@ name: Build Windows
 
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Version for artifacts"
+        required: false
+        default: ""
   push:
     branches: [publish]
 
 jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION_INPUT="${{ inputs.version }}"
+          if [ -n "$VERSION_INPUT" ]; then
+            VERSION="$VERSION_INPUT"
+          else
+            VERSION="$(python3 scripts/get_project_version.py)"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
   build:
+    needs: prepare
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -64,8 +87,8 @@ jobs:
           app\\main.py
       - name: Package artifact
         run: |
-          Compress-Archive -Path dist\\NetPlanner\\* -DestinationPath NetPlanner-windows.zip
+          Compress-Archive -Path dist\\NetPlanner\\* -DestinationPath NetPlanner-${{ needs.prepare.outputs.version }}-portable-x86_64.zip
       - uses: actions/upload-artifact@v4
         with:
-          name: NetPlanner-windows
-          path: NetPlanner-windows.zip
+          name: NetPlanner-${{ needs.prepare.outputs.version }}-portable-x86_64
+          path: NetPlanner-${{ needs.prepare.outputs.version }}-portable-x86_64.zip

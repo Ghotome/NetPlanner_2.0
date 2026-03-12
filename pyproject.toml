@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "netplanner"
-version = "0.10.0"
+version = "2.6.3"
 description = "Кросплатформений додаток для моделювання і моніторингу ІР мережі."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -25,7 +25,7 @@ dev = [
   "ruff>=0.9,<1",
 ]
 build = [
-  "pyinstaller>=6.11,<7",
+  "pyinstaller>=6.17,<7",
 ]
 
 [project.scripts]

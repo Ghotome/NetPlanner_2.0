@@ -9,6 +9,9 @@ normalize_arch() {
     x86_64|amd64)
       echo "x86_64"
       ;;
+    arm)
+      echo "aarch64"
+      ;;
     aarch64|arm64)
       echo "aarch64"
       ;;
@@ -23,8 +26,25 @@ normalize_deb_arch() {
     x86_64|amd64)
       echo "amd64"
       ;;
+    arm)
+      echo "arm64"
+      ;;
     aarch64|arm64)
       echo "arm64"
+      ;;
+    *)
+      echo "$1"
+      ;;
+  esac
+}
+
+display_arch() {
+  case "$1" in
+    aarch64|arm64|arm)
+      echo "arm"
+      ;;
+    x86_64|amd64)
+      echo "x86_64"
       ;;
     *)
       echo "$1"
@@ -36,7 +56,14 @@ asset_basename() {
   local version="$1"
   local type="$2"
   local arch="$3"
-  echo "NetPlanner-${version}-${type}-${arch}"
+  echo "NetPlanner-${version}-${type}-$(display_arch "$arch")"
+}
+
+portable_asset_basename() {
+  local version="$1"
+  local platform="$2"
+  local arch="$3"
+  echo "NetPlanner-${version}-portable-${platform}-$(display_arch "$arch")"
 }
 
 write_linux_launcher() {

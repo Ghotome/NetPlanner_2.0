@@ -321,10 +321,84 @@
     <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
     <script>
       const map = L.map('map', { zoomControl: true }).setView([50.45, 30.52], 11);
-      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        maxZoom: 19,
-        attribution: '&copy; OpenStreetMap contributors'
-      }).addTo(map);
+      const baseLayerProviders = [
+        {
+          name: 'Carto Voyager',
+          url: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
+          options: {
+            subdomains: 'abcd',
+            maxZoom: 20,
+            attribution: '&copy; OpenStreetMap contributors &copy; CARTO'
+          }
+        },
+        {
+          name: 'Esri World Street Map',
+          url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}',
+          options: {
+            maxZoom: 19,
+            attribution: 'Tiles &copy; Esri'
+          }
+        },
+        {
+          name: 'OpenStreetMap',
+          url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+          options: {
+            maxZoom: 19,
+            attribution: '&copy; OpenStreetMap contributors'
+          }
+        }
+      ];
+      let activeBaseLayerIndex = 0;
+      let baseLayer = null;
+
+      function showBaseLayerFeedback(message, isError = false) {
+        const feedback = document.getElementById('map-search-feedback');
+        if (!feedback) { return; }
+        feedback.textContent = message;
+        feedback.style.display = 'block';
+        feedback.style.color = isError ? '' : '#38bdf8';
+      }
+
+      function hideBaseLayerFeedback() {
+        const feedback = document.getElementById('map-search-feedback');
+        if (!feedback) { return; }
+        feedback.textContent = '';
+        feedback.style.display = 'none';
+        feedback.style.color = '';
+      }
+
+      function installBaseLayer(index, suppressNotice = false) {
+        if (index < 0 || index >= baseLayerProviders.length) { return false; }
+        const provider = baseLayerProviders[index];
+        if (baseLayer) {
+          map.removeLayer(baseLayer);
+        }
+        activeBaseLayerIndex = index;
+        baseLayer = L.tileLayer(provider.url, provider.options);
+        let fallbackTriggered = false;
+        baseLayer.on('tileerror', () => {
+          if (fallbackTriggered) { return; }
+          fallbackTriggered = true;
+          const nextIndex = activeBaseLayerIndex + 1;
+          if (nextIndex < baseLayerProviders.length) {
+            installBaseLayer(nextIndex, true);
+            showBaseLayerFeedback(
+              `Базова карта "${provider.name}" недоступна. Використано "${baseLayerProviders[nextIndex].name}".`
+            );
+          } else {
+            showBaseLayerFeedback('Не вдалося завантажити жоден базовий шар карти.', true);
+          }
+        });
+        baseLayer.once('load', () => {
+          if (!suppressNotice) {
+            hideBaseLayerFeedback();
+          }
+        });
+        baseLayer.addTo(map);
+        return true;
+      }
+
+      installBaseLayer(0);
       const elevationLayer = L.tileLayer(
         'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png',
         { maxZoom: 15, opacity: 0.65, className: 'elevation-tiles' }

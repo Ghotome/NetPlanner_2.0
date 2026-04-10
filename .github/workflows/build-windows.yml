@@ -63,8 +63,8 @@ jobs:
           app\\main.py
       - name: Package artifact
         run: |
-          Compress-Archive -Path dist\\NetPlanner\\* -DestinationPath NetPlanner-${{ needs.prepare.outputs.version }}-portable-x86_64.zip
+          Compress-Archive -Path dist\\NetPlanner\\* -DestinationPath NetPlanner-${{ needs.prepare.outputs.version }}-portable-windows-x86_64.zip
       - uses: actions/upload-artifact@v4
         with:
-          name: NetPlanner-${{ needs.prepare.outputs.version }}-portable-x86_64
-          path: NetPlanner-${{ needs.prepare.outputs.version }}-portable-x86_64.zip
+          name: NetPlanner-${{ needs.prepare.outputs.version }}-portable-windows-x86_64
+          path: NetPlanner-${{ needs.prepare.outputs.version }}-portable-windows-x86_64.zip

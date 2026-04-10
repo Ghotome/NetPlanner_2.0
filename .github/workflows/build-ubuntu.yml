@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
-      has_appimagetool_aarch64: ${{ steps.tools.outputs.has_appimagetool_aarch64 }}
+      has_appimagetool_arm: ${{ steps.tools.outputs.has_appimagetool_arm }}
     steps:
       - uses: actions/checkout@v4
       - id: version
@@ -34,10 +34,10 @@ jobs:
         run: |
           set -euo pipefail
           if [ -f tools/appimagetool-aarch64.AppImage ] && [ -f tools/appimagetool-aarch64.AppImage.sha256 ]; then
-            echo "has_appimagetool_aarch64=true" >> "$GITHUB_OUTPUT"
+            echo "has_appimagetool_arm=true" >> "$GITHUB_OUTPUT"
           else
-            echo "has_appimagetool_aarch64=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Skipping aarch64 AppImage build. Vendored tools/appimagetool-aarch64.AppImage (+ .sha256) not found."
+            echo "has_appimagetool_arm=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping arm AppImage build. Vendored tools/appimagetool-aarch64.AppImage (+ .sha256) not found."
           fi
   deb:
     needs: prepare
@@ -95,11 +95,11 @@ jobs:
       - name: Upload portable tar.gz
         uses: actions/upload-artifact@v4
         with:
-          name: NetPlanner-${{ needs.prepare.outputs.version }}-portable-x86_64
-          path: build/tar/NetPlanner-${{ needs.prepare.outputs.version }}-portable-x86_64.tar.gz
-  appimage_aarch64:
+          name: NetPlanner-${{ needs.prepare.outputs.version }}-portable-linux-x86_64
+          path: build/tar/NetPlanner-${{ needs.prepare.outputs.version }}-portable-linux-x86_64.tar.gz
+  appimage_arm:
     needs: prepare
-    if: ${{ needs.prepare.outputs.has_appimagetool_aarch64 == 'true' }}
+    if: ${{ needs.prepare.outputs.has_appimagetool_arm == 'true' }}
     runs-on: ubuntu-22.04-arm
     steps:
       - uses: actions/checkout@v4
@@ -114,14 +114,14 @@ jobs:
           NETPLANNER_SKIP_BUILD=1 VERSION=${{ needs.prepare.outputs.version }} APPIMAGE_ARCH=aarch64 APPIMAGETOOL_ARCH=aarch64 scripts/build_appimage.sh
       - name: Build portable tar.gz
         run: |
-          NETPLANNER_SKIP_BUILD=1 VERSION=${{ needs.prepare.outputs.version }} PORTABLE_ARCH=aarch64 scripts/build_tarball.sh
+          NETPLANNER_SKIP_BUILD=1 VERSION=${{ needs.prepare.outputs.version }} PORTABLE_ARCH=arm scripts/build_tarball.sh
       - name: Upload AppImage
         uses: actions/upload-artifact@v4
         with:
-          name: NetPlanner-${{ needs.prepare.outputs.version }}-appimage-aarch64
-          path: NetPlanner-${{ needs.prepare.outputs.version }}-appimage-aarch64.AppImage
+          name: NetPlanner-${{ needs.prepare.outputs.version }}-appimage-arm
+          path: NetPlanner-${{ needs.prepare.outputs.version }}-appimage-arm.AppImage
       - name: Upload portable tar.gz
         uses: actions/upload-artifact@v4
         with:
-          name: NetPlanner-${{ needs.prepare.outputs.version }}-portable-aarch64
-          path: build/tar/NetPlanner-${{ needs.prepare.outputs.version }}-portable-aarch64.tar.gz
+          name: NetPlanner-${{ needs.prepare.outputs.version }}-portable-linux-arm
+          path: build/tar/NetPlanner-${{ needs.prepare.outputs.version }}-portable-linux-arm.tar.gz
